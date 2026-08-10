@@ -49,6 +49,7 @@ runtime CAST +0x0C = parsed NODE +0x50
 6. 以参数 `0` 调用 `srd_apply_animation_motion_set` (`0xAD52B0`)，立即把该动画的公共通道和 CAST 专属通道应用到引用层 CAST。
 
 公共标量求值器不按目标字段转换。因此 Rust 的 `ReferenceDefinition::animation_request` 同样从 `0xBF800000` 开始，保留 f32、i32 或四字节求值结果的原始位型，并使用同一负数回退条件。
+因此通道 `23` 的 TRK **只提供 frame**；动画名、允许开关和负值回退帧分别来自目标 RefCast 的 CRFD `+0x404/+0x400/+0x604`。父动画每次采样都会覆盖该引用实例中 child ANIM 的 raw frame 并立即求值，但不会选择 child scene 的 ANMS、改变 layer gate、加载资源或按 child 自己的时钟额外推进。每个 RefCast 持有独立 copied layer，所以同一 authored layer 的兄弟引用实例互不改写；child 动画再命中另一个 RefCast 的通道 `23` 时按同一规则递归。
 
 ## 样本验证与实现边界
 

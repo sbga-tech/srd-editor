@@ -8,7 +8,7 @@ use srd_editor::csli::CsliDefinition;
 use srd_editor::dds::{
     D3d9Direct2dUpload, D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy, GameTextureFormat,
 };
-use srd_editor::editor_document::EditorDocument;
+use srd_editor::document::EditorDocument;
 use srd_editor::fennel::{
     FENNEL_TEXTBOX_CLIP_FLAG, FennelDefaultLayoutError, FennelFittingLayoutError,
     FennelFontSlotRegistry, FennelLayoutGlyphMetrics, FennelMode56LayoutError,
@@ -65,7 +65,7 @@ use srd_editor::surf_file_table::parse_surf_file_table;
 use srd_editor::target_pass::build_evidence_srd_scene_submission_indices;
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
-use srd_editor::vtbf::{Block, SrdFile};
+use srd_editor::vtbf::{Block, OwnedBlock, OwnedProperty, SrdFile};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CorpusProfile {
@@ -102,10 +102,14 @@ fn dds_corpus_profile(file_count: usize) -> CorpusProfile {
     }
 }
 
-fn corpus_root() -> PathBuf {
-    std::env::var_os("SRD_CORPUS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("../diff-test/surfboard"))
+macro_rules! corpus_root {
+    () => {{
+        let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+            eprintln!("skipping: GAME_DATA_CORPUS is not set");
+            return;
+        };
+        root.join("surfboard")
+    }};
 }
 
 fn collect_srd_files(path: &Path, output: &mut Vec<PathBuf>) {
@@ -122,7 +126,7 @@ fn collect_srd_files(path: &Path, output: &mut Vec<PathBuf>) {
 
 #[test]
 fn shipped_surf_file_table_maps_resource_84_to_linked_verse_gate() {
-    let Some(data_root) = corpus_root().parent().map(Path::to_path_buf) else {
+    let Some(data_root) = corpus_root!().parent().map(Path::to_path_buf) else {
         return;
     };
     let path = data_root.join("db/SurfFileTableRecord.bin");
@@ -398,13 +402,69 @@ fn validates_complete_game_simple_shader_key_collection() {
 }
 
 #[test]
+fn system_fixture_matches_the_documented_runtime_pointer_shape() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document =
+        EditorDocument::load(root.join("surfboard/system/chu_ui_system_00_v10.srd")).unwrap();
+
+    let scene = &document.project.scenes[0];
+    assert_eq!(scene.name, b"CHU_UI_System_00_v10");
+    assert_eq!((scene.width, scene.height), (1920.0, 1080.0));
+
+    let layer = &scene.layers[0];
+    assert_eq!(layer.name, b"L_System_fill");
+    assert_eq!(layer.nodes.len(), 5);
+    let names = layer
+        .nodes
+        .iter()
+        .map(|node| node.name.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            Some(b"C_pos".as_slice()),
+            Some(b"C_fill".as_slice()),
+            Some(b"C_text_pos".as_slice()),
+            Some(b"T_title".as_slice()),
+            Some(b"T_message".as_slice()),
+        ]
+    );
+    assert_eq!(layer.nodes[1].cast_type(), Some(1));
+    assert!(layer.image_by_node[1].is_some());
+    assert!(
+        layer.image_by_node[3]
+            .as_ref()
+            .is_some_and(|image| image.creates_text_cast())
+    );
+    assert!(
+        layer.image_by_node[4]
+            .as_ref()
+            .is_some_and(|image| image.creates_text_cast())
+    );
+
+    let hierarchy = layer.build_hierarchy().unwrap();
+    assert_eq!(hierarchy.roots, [0]);
+    assert_eq!(
+        hierarchy.parents,
+        [None, Some(0), Some(0), Some(2), Some(2)]
+    );
+    assert_eq!(
+        hierarchy.children,
+        [vec![1, 2], Vec::new(), vec![3, 4], Vec::new(), Vec::new()]
+    );
+}
+
+#[test]
 fn builds_the_first_evidence_complete_srd_draw() {
     let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
         eprintln!("skipping: GAME_DATA_CORPUS is not set");
         return;
     };
     let document =
-        EditorDocument::load(root.join("surfboard/system/CHU_UI_System_00_v10.srd")).unwrap();
+        EditorDocument::load(root.join("surfboard/system/chu_ui_system_00_v10.srd")).unwrap();
     let draws = build_evidence_complete_initial_image_draws(
         &document.project,
         &document.textures,
@@ -1366,7 +1426,7 @@ fn routes_explicit_fennel_font_slots_to_their_own_runtime_atlases() {
 
 #[test]
 fn audits_initial_visible_fennel_draws_in_the_real_corpus() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -1654,7 +1714,7 @@ fn linkedverse_reachable_3d_text_uses_the_binary_textbox_matrix_branch() {
 
 #[test]
 fn audits_initial_slice_and_number_runtime_draws_in_the_real_corpus() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2021,7 +2081,7 @@ fn validates_editor_upload_and_decode_paths_for_complete_game_dds() {
 
 #[test]
 fn parses_local_dds_corpus_with_the_binary_resource_rules() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2110,7 +2170,7 @@ fn parses_local_dds_corpus_with_the_binary_resource_rules() {
 
 #[test]
 fn image_cast_flags_select_only_binary_proven_render_presets_in_the_local_corpus() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2185,7 +2245,7 @@ fn image_cast_flags_select_only_binary_proven_render_presets_in_the_local_corpus
 
 #[test]
 fn cast_channel_23_only_targets_reference_casts() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2237,7 +2297,7 @@ fn cast_channel_23_only_targets_reference_casts() {
 
 #[test]
 fn parses_local_corpus_with_binary_proven_boundaries() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2255,7 +2315,7 @@ fn parses_local_corpus_with_binary_proven_boundaries() {
 
 #[test]
 fn audits_unsupported_animation_and_catr_layouts_in_the_real_corpus() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2402,7 +2462,7 @@ fn audits_unsupported_animation_and_catr_layouts_in_the_real_corpus() {
 
 #[test]
 fn parses_cast_attribute_lists_and_ext_params() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2726,7 +2786,7 @@ fn parses_cast_attribute_lists_and_ext_params() {
 
 #[test]
 fn initial_srd_image_draws_select_binary_shader_keys() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2926,7 +2986,7 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
 
 #[test]
 fn reference_casts_resolve_inside_the_binary_project_scene_table() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -2981,7 +3041,7 @@ fn reference_casts_resolve_inside_the_binary_project_scene_table() {
 
 #[test]
 fn reference_runtime_construction_converges_for_the_local_corpus() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3050,7 +3110,7 @@ fn reference_runtime_construction_converges_for_the_local_corpus() {
 
 #[test]
 fn copied_reference_text_casts_use_resources_requested_by_original_layers() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3170,7 +3230,7 @@ fn copied_reference_text_casts_use_resources_requested_by_original_layers() {
 
 #[test]
 fn reference_instances_apply_the_binary_cast_channel_dispatch() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3252,7 +3312,7 @@ fn reference_instances_apply_the_binary_cast_channel_dispatch() {
 
 #[test]
 fn reference_channel_23_recurses_through_real_runtime_instances() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3315,7 +3375,7 @@ fn reference_channel_23_recurses_through_real_runtime_instances() {
 
 #[test]
 fn avatar_track_uses_game_cubic_result() {
-    let path = corpus_root()
+    let path = corpus_root!()
         .join("common")
         .join("commonAvatar")
         .join("CHU_UI_Common_Avatar_Position_00.srd");
@@ -3356,7 +3416,7 @@ fn avatar_track_uses_game_cubic_result() {
 
 #[test]
 fn parses_binary_selected_layer_transform_records() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3405,7 +3465,7 @@ fn parses_binary_selected_layer_transform_records() {
 
 #[test]
 fn parses_and_animates_common_transform_colors() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3472,7 +3532,7 @@ fn parses_and_animates_common_transform_colors() {
 
 #[test]
 fn parses_runtime_animation_slots_names_and_durations() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3539,7 +3599,7 @@ fn parses_runtime_animation_slots_names_and_durations() {
 
 #[test]
 fn parses_and_applies_scene_animation_sets() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3617,7 +3677,7 @@ fn parses_and_applies_scene_animation_sets() {
 
 #[test]
 fn parses_text_records_and_resolves_project_fonts() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -3718,7 +3778,7 @@ fn parses_text_records_and_resolves_project_fonts() {
 
 #[test]
 fn audits_binary_proven_static_fennel_layout_subset() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -4062,7 +4122,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
 
 #[test]
 fn audits_fennel_font_resource_request_and_slot_order() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -4138,7 +4198,7 @@ fn audits_fennel_font_resource_request_and_slot_order() {
 
 #[test]
 fn parses_and_links_binary_proven_csli_grids() {
-    let root = corpus_root();
+    let root = corpus_root!();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
         return;
@@ -4680,7 +4740,7 @@ fn parses_and_links_binary_proven_csli_grids() {
 
 #[test]
 fn avatar_motion_targets_runtime_cast_index() {
-    let path = corpus_root()
+    let path = corpus_root!()
         .join("common")
         .join("commonAvatar")
         .join("CHU_UI_Common_Avatar_Position_00.srd");
@@ -4737,4 +4797,155 @@ fn signed_property(file: &SrdFile, block: &Block, code: u8) -> Option<i32> {
     block
         .last_property(code)
         .and_then(|property| property.read_signed_scalar(file))
+}
+
+#[test]
+fn canonical_owned_vtbf_reemits_complete_corpus_byte_identically() {
+    let root = corpus_root!();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    assert_eq!(srd_corpus_profile(files.len()), CorpusProfile::Complete91);
+
+    for path in files {
+        let original = fs::read(&path).unwrap();
+        let parsed = SrdFile::parse(original.clone())
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let encoded = parsed
+            .to_owned()
+            .encode()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        if encoded != original {
+            panic!(
+                "{}: canonical owned VTBF differs at {:#x}",
+                path.display(),
+                first_byte_difference(&original, &encoded)
+            );
+        }
+    }
+}
+
+#[test]
+fn clean_editor_save_as_reemits_complete_corpus_byte_identically() {
+    let root = corpus_root!();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    assert_eq!(srd_corpus_profile(files.len()), CorpusProfile::Complete91);
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    for (index, path) in files.iter().enumerate() {
+        let original = fs::read(path).unwrap();
+        let destination = std::env::temp_dir().join(format!(
+            "srd-editor-clean-corpus-save-{}-{nonce}-{index}.srd",
+            std::process::id()
+        ));
+        let mut document = EditorDocument::load(path).unwrap();
+        document.save_as(&destination).unwrap();
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            original,
+            "{}",
+            path.display()
+        );
+        fs::remove_file(destination).unwrap();
+    }
+}
+
+#[test]
+fn owned_vtbf_structural_insert_preserves_existing_bytes() {
+    let root = corpus_root!();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    assert_eq!(srd_corpus_profile(files.len()), CorpusProfile::Complete91);
+    let path = files.first().expect("complete corpus has a first SRD file");
+    let original = fs::read(path).unwrap();
+    let parsed = SrdFile::parse(original.clone()).unwrap();
+    let original_root = parsed.blocks.first().expect("corpus file has a root block");
+    let original_child = original_root
+        .children
+        .first()
+        .expect("corpus root has an existing child");
+    let original_child_end = parsed_block_end(original_child);
+    let original_child_bytes = original[original_child.offset..original_child_end].to_vec();
+    let original_property_bytes = original_root
+        .properties
+        .iter()
+        .map(|property| property.encoded_bytes(&parsed).to_vec())
+        .collect::<Vec<_>>();
+
+    let mut owned = parsed.to_owned();
+    let owned_root = owned.blocks.first_mut().expect("owned root block");
+    owned_root
+        .insert_property(
+            owned_root.properties.len(),
+            OwnedProperty::u16(0xee, 0x1234),
+        )
+        .unwrap();
+    owned_root
+        .insert_child(owned_root.children.len(), OwnedBlock::new(*b"TEST"))
+        .unwrap();
+
+    let encoded = owned.encode().unwrap();
+    let reparsed = SrdFile::parse(encoded.clone()).unwrap();
+    let reparsed_root = reparsed.blocks.first().expect("reparsed root block");
+    let inserted_property = reparsed_root
+        .last_property(0xee)
+        .expect("inserted property is present");
+    assert_eq!(inserted_property.type_code, 6);
+    assert_eq!(inserted_property.value_bytes(&reparsed), &[0x34, 0x12]);
+    assert_eq!(reparsed_root.children.last().unwrap().tag, *b"TEST");
+
+    // The file header, root signature, root tag, every pre-existing root property, and the
+    // original child subtree stay byte-for-byte identical. Only the root size/count fields and
+    // the positions following the inserted records legitimately change.
+    assert_eq!(&encoded[..20], &original[..20]);
+    assert_eq!(&encoded[24..28], &original[24..28]);
+    for (original_property, reparsed_property) in original_property_bytes
+        .iter()
+        .zip(&reparsed_root.properties[..original_property_bytes.len()])
+    {
+        assert_eq!(
+            original_property.as_slice(),
+            reparsed_property.encoded_bytes(&reparsed)
+        );
+    }
+    let reparsed_child = reparsed_root
+        .children
+        .first()
+        .expect("original child is still first");
+    assert_eq!(
+        &encoded[reparsed_child.offset..parsed_block_end(reparsed_child)],
+        original_child_bytes
+    );
+}
+
+fn parsed_block_end(block: &Block) -> usize {
+    block.children.last().map_or(
+        block.offset + 8 + block.size_field as usize,
+        parsed_block_end,
+    )
+}
+
+fn first_byte_difference(left: &[u8], right: &[u8]) -> usize {
+    left.iter()
+        .zip(right)
+        .position(|(left, right)| left != right)
+        .unwrap_or_else(|| left.len().min(right.len()))
 }

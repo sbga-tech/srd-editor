@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ffi::c_void;
 use std::fmt;
 use std::fs;
@@ -6,15 +5,14 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::slice;
 
-use windows::Win32::Foundation::{POINT, RECT};
-use windows::Win32::Graphics::Direct3D9::{
+use super::bindings::{
     D3DFMT_A8R8G8B8, D3DFORMAT, D3DLOCKED_RECT, D3DPOOL_DEFAULT, D3DPOOL_SYSTEMMEM,
-    IDirect3DDevice9, IDirect3DTexture9,
+    IDirect3DDevice9, IDirect3DTexture9, POINT, RECT,
 };
 
 use crate::dds::{D3d9Direct2dUpload, D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy};
-use crate::ruhuna::{RuhunaD3d9SamplerState, RuhunaFont};
-use crate::texture::TextureList;
+use crate::renderer::assets::{FennelAtlasSourceSet, SrdTextureSourceSet};
+use crate::ruhuna::RuhunaD3d9SamplerState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct D3d9TextureError(pub String);
@@ -42,44 +40,26 @@ pub struct D3d9Texture2d {
 }
 
 pub struct SrdD3d9TextureSet {
-    sources: Vec<Option<Vec<u8>>>,
+    sources: SrdTextureSourceSet,
     textures: Vec<Option<D3d9Texture2d>>,
 }
 
 /// Device-reset-safe D3D9 textures for the DDS pages embedded in one Ruhuna
 /// RFZ font. Page order is the AVTS/database page order already validated by
-/// `RuhunaFont::atlas_pages`.
+/// the platform-neutral atlas source set.
 pub struct RuhunaD3d9AtlasSet {
-    sources: Vec<Vec<u8>>,
+    sources: FennelAtlasSourceSet,
     textures: Vec<Option<D3d9Texture2d>>,
-    sampler: RuhunaD3d9SamplerState,
 }
 
 impl RuhunaD3d9AtlasSet {
-    pub fn from_font(
+    pub fn from_sources(
         device: &IDirect3DDevice9,
-        font: &RuhunaFont,
+        sources: FennelAtlasSourceSet,
     ) -> Result<Self, D3d9TextureError> {
-        if font.textures.len() != 1 {
-            return Err(D3d9TextureError(format!(
-                "Ruhuna D3D9 atlas currently requires the binary-proven single TextureResource, found {}",
-                font.textures.len()
-            )));
-        }
-        let pages = font
-            .atlas_pages(&font.textures[0])
-            .map_err(|error| D3d9TextureError(error.to_string()))?;
-        let sampler = font
-            .atlas_d3d9_sampler_state(&font.textures[0])
-            .map_err(|error| D3d9TextureError(error.to_string()))?;
-        let sources = pages
-            .iter()
-            .map(|page| font.atlas_page_bytes(page).to_vec())
-            .collect::<Vec<_>>();
         let mut result = Self {
-            textures: (0..sources.len()).map(|_| None).collect(),
+            textures: (0..sources.page_count()).map(|_| None).collect(),
             sources,
-            sampler,
         };
         result.create_device_objects(device)?;
         Ok(result)
@@ -95,7 +75,7 @@ impl RuhunaD3d9AtlasSet {
         &mut self,
         device: &IDirect3DDevice9,
     ) -> Result<(), D3d9TextureError> {
-        for (index, source) in self.sources.iter().enumerate() {
+        for (index, source) in self.sources.pages().enumerate() {
             self.textures[index] = Some(D3d9Texture2d::from_dds_bytes(device, source)?);
         }
         Ok(())
@@ -106,35 +86,19 @@ impl RuhunaD3d9AtlasSet {
     }
 
     pub fn page_count(&self) -> usize {
-        self.sources.len()
+        self.sources.page_count()
     }
 
     pub fn sampler(&self) -> RuhunaD3d9SamplerState {
-        self.sampler
+        self.sources.sampler()
     }
 }
 
 impl SrdD3d9TextureSet {
-    pub fn load_required(
+    pub fn from_sources(
         device: &IDirect3DDevice9,
-        game_data_root: &Path,
-        definitions: &TextureList,
-        required_indices: impl IntoIterator<Item = usize>,
+        sources: SrdTextureSourceSet,
     ) -> Result<Self, D3d9TextureError> {
-        let required = required_indices.into_iter().collect::<BTreeSet<_>>();
-        let mut sources = vec![None; definitions.textures.len()];
-        for index in required {
-            let definition = definitions.textures.get(index).ok_or_else(|| {
-                D3d9TextureError(format!("required TEX index {index} is outside TEXL"))
-            })?;
-            let path = definition
-                .external_dds_path(game_data_root)
-                .map_err(|error| D3d9TextureError(error.to_string()))?;
-            let bytes = fs::read(&path).map_err(|error| {
-                D3d9TextureError(format!("failed to read {}: {error}", path.display()))
-            })?;
-            sources[index] = Some(bytes);
-        }
         let mut set = Self {
             textures: (0..sources.len()).map(|_| None).collect(),
             sources,
@@ -155,7 +119,6 @@ impl SrdD3d9TextureSet {
     ) -> Result<(), D3d9TextureError> {
         for (index, source) in self.sources.iter().enumerate() {
             self.textures[index] = source
-                .as_ref()
                 .map(|bytes| D3d9Texture2d::from_dds_bytes(device, bytes))
                 .transpose()?;
         }

@@ -4,8 +4,7 @@ use std::mem;
 use std::ptr;
 use std::slice;
 
-use windows::Win32::Foundation::RECT;
-use windows::Win32::Graphics::Direct3D9::{
+use super::bindings::{
     D3DCLEAR_TARGET, D3DLOCK_DISCARD, D3DLOCKED_RECT, D3DPOOL_DEFAULT, D3DPOOL_SYSTEMMEM,
     D3DPT_TRIANGLESTRIP, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHAFUNC, D3DRS_ALPHAREF,
     D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP, D3DRS_BLENDOPALPHA, D3DRS_COLORWRITEENABLE,
@@ -13,15 +12,15 @@ use windows::Win32::Graphics::Direct3D9::{
     D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA, D3DRS_STENCILENABLE,
     D3DRS_ZENABLE, D3DRS_ZFUNC, D3DRS_ZWRITEENABLE, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV,
     D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER, D3DSBT_ALL, D3DUSAGE_DYNAMIC, D3DUSAGE_RENDERTARGET,
-    D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, D3DVIEWPORT9, IDirect3DBaseTexture9, IDirect3DDevice9,
-    IDirect3DPixelShader9, IDirect3DStateBlock9, IDirect3DSurface9, IDirect3DTexture9,
-    IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
+    D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, D3DVIEWPORT9, Error, HRESULT, IDirect3DBaseTexture9,
+    IDirect3DDevice9, IDirect3DPixelShader9, IDirect3DStateBlock9, IDirect3DSurface9,
+    IDirect3DTexture9, IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
+    Interface, RECT, Result,
 };
-use windows::core::{Error, HRESULT, Interface, Result};
 
-use crate::d3d9_texture::SrdD3d9TextureSet;
-use crate::render::{CeylonAlphaStencilState, CeylonRenderScissorState};
 use crate::render::{SRD_D3D9_VERTEX_DECLARATION, SrdRenderVertex};
+use crate::renderer::backend::SrdExternalRenderState;
+use crate::renderer::d3d9::texture::SrdD3d9TextureSet;
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::{
     EMBEDDED_SIMPLE_SHADER_KEYS, EmbeddedSimpleShaderPair, embedded_simple_shader_pair,
@@ -30,37 +29,6 @@ use crate::srd_draw::EvidenceCompleteSrdDraw;
 
 const E_FAIL: HRESULT = HRESULT(0x8000_4005_u32 as i32);
 const E_INVALIDARG: HRESULT = HRESULT(0x8007_0057_u32 as i32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SrdDx9ExternalContext {
-    pub scissor: CeylonRenderScissorState,
-    pub alpha_stencil: CeylonAlphaStencilState,
-}
-
-impl SrdDx9ExternalContext {
-    /// Explicit host input stating that the external material scissor is
-    /// disabled. Callers must choose this state; it is not inferred from SRD.
-    pub const fn without_scissor() -> Self {
-        Self {
-            scissor: CeylonRenderScissorState {
-                enabled: false,
-                rectangle: crate::render::D3d9Rect {
-                    left: 0,
-                    top: 0,
-                    right: 0,
-                    bottom: 0,
-                },
-            },
-            alpha_stencil: CeylonAlphaStencilState::default_material(),
-        }
-    }
-
-    /// Explicit context used by the standalone smoke harness. This is not
-    /// inferred from SRD and is not claimed to be every game caller's state.
-    pub const fn smoke_without_scissor() -> Self {
-        Self::without_scissor()
-    }
-}
 
 /// Native D3D9 submission for the evidence-complete SRD subset.
 ///
@@ -185,73 +153,23 @@ impl SrdDx9Renderer {
         read_render_target_bgra(&self.device, &target.surface)
     }
 
-    pub fn render_to_composition(
-        &mut self,
-        draws: &[EvidenceCompleteSrdDraw],
-        external: SrdDx9ExternalContext,
-        textures: Option<&SrdD3d9TextureSet>,
-        clear_argb: u32,
-    ) -> Result<()> {
+    pub(crate) fn bind_composition_target(&self, clear_argb: u32) -> Result<RenderTargetGuard> {
         let target = self
             .composition_target
             .as_ref()
             .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?;
-        let surface = target.surface.clone();
-        let size = target.size;
-        let _targets = RenderTargetGuard::bind(&self.device, &surface, size)?;
+        let guard = RenderTargetGuard::bind(&self.device, &target.surface, target.size)?;
         unsafe {
             self.device
                 .Clear(0, ptr::null(), D3DCLEAR_TARGET as u32, clear_argb, 1.0, 0)?;
         }
-        self.render(draws, external, textures)
-    }
-
-    /// Binds and clears the existing Composition target while another
-    /// evidence-complete renderer submits to the same D3D9 device. The guard
-    /// restores the caller's render target and viewport after the closure.
-    pub fn render_custom_to_composition<F>(&self, clear_argb: u32, draw: F) -> Result<()>
-    where
-        F: FnOnce() -> Result<()>,
-    {
-        let target = self
-            .composition_target
-            .as_ref()
-            .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?;
-        let surface = target.surface.clone();
-        let size = target.size;
-        let _targets = RenderTargetGuard::bind(&self.device, &surface, size)?;
-        unsafe {
-            self.device
-                .Clear(0, ptr::null(), D3DCLEAR_TARGET as u32, clear_argb, 1.0, 0)?;
-        }
-        draw()
-    }
-
-    /// Mutable counterpart used by the mixed runtime target stream. The
-    /// Composition surface is bound once while SRD format-14 and Fennel
-    /// format-13 commands are submitted in the target planner's order.
-    pub fn render_runtime_to_composition<F>(&mut self, clear_argb: u32, draw: F) -> Result<()>
-    where
-        F: FnOnce(&mut Self) -> Result<()>,
-    {
-        let target = self
-            .composition_target
-            .as_ref()
-            .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?;
-        let surface = target.surface.clone();
-        let size = target.size;
-        let _targets = RenderTargetGuard::bind(&self.device, &surface, size)?;
-        unsafe {
-            self.device
-                .Clear(0, ptr::null(), D3DCLEAR_TARGET as u32, clear_argb, 1.0, 0)?;
-        }
-        draw(self)
+        Ok(guard)
     }
 
     pub fn render(
         &mut self,
         draws: &[EvidenceCompleteSrdDraw],
-        external: SrdDx9ExternalContext,
+        external: SrdExternalRenderState,
         textures: Option<&SrdD3d9TextureSet>,
     ) -> Result<()> {
         if draws.is_empty() {
@@ -268,7 +186,7 @@ impl SrdDx9Renderer {
         &mut self,
         draw: &EvidenceCompleteSrdDraw,
         vertices: &[SrdRenderVertex],
-        external: SrdDx9ExternalContext,
+        external: SrdExternalRenderState,
         textures: Option<&SrdD3d9TextureSet>,
     ) -> Result<()> {
         let state = StateBlockGuard::capture(&self.device)?;
@@ -280,7 +198,7 @@ impl SrdDx9Renderer {
         &mut self,
         draw: &EvidenceCompleteSrdDraw,
         vertices: &[SrdRenderVertex],
-        external: SrdDx9ExternalContext,
+        external: SrdExternalRenderState,
         textures: Option<&SrdD3d9TextureSet>,
     ) -> Result<()> {
         if vertices.len() < 3 {
@@ -714,7 +632,7 @@ impl Drop for StateBlockGuard {
     }
 }
 
-struct RenderTargetGuard {
+pub(crate) struct RenderTargetGuard {
     device: IDirect3DDevice9,
     render_target: IDirect3DSurface9,
     depth_stencil: Option<IDirect3DSurface9>,

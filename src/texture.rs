@@ -395,9 +395,12 @@ mod tests {
         };
         assert_eq!(
             texture
-                .external_dds_path(Path::new(r"D:\game\data"))
+                .external_dds_path(Path::new("fixture-root"))
                 .unwrap(),
-            PathBuf::from(r"D:\game\data\surfboard\texture\CHU_UI_Advertise_00_v250.dds")
+            Path::new("fixture-root")
+                .join("surfboard")
+                .join("texture")
+                .join("CHU_UI_Advertise_00_v250.dds")
         );
     }
 }

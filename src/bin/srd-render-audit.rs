@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use srd_editor::editor_document::{EditorDocument, display_srd_name};
+use srd_editor::document::{EditorDocument, display_srd_name};
 use srd_editor::image::{ImageDefinition, SrdTextureBindingSource};
 use srd_editor::number::NumberDefinition;
 use srd_editor::render::{

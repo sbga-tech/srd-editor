@@ -1,6 +1,6 @@
 # SCN `ANMS` / `SANM` 场景动画集与运行时页面选择
 
-状态：文件布局、运行时构造、layer gate、动画查找、动画集 identity 解码，以及 Chusan AdvertiseLogo 的六阶段入口/出口表均已由当前游戏二进制闭环。编辑器不再把同一 SCN 的所有互斥页面同时提交。
+状态：文件与运行时布局、位置式 layer 绑定、选择时序、独立场景时钟、layer gate、动画查找、动画集 identity 解码，以及 Chusan AdvertiseLogo 的六阶段入口/出口表均已由当前游戏二进制闭环。编辑器不再把同一 SCN 的所有互斥页面同时提交。
 
 分析对象：
 
@@ -41,16 +41,38 @@ SCN 解析记录 `+0x54` 是直接 `ANMS` 数，`+0x58` 指向步长 `0x50` 的 
 4. 调用 `srd_find_animation_by_name`，保存找到的 runtime ANIM 指针；
 5. 不存在或为空的名字保存空动画指针，不回退到“第一个动画”。
 
-`sub_AC2FD0` 选择一个 SrAnimationSet 时：
+每个 `SrAnimationSet` 及其内部绑定的恢复布局为：
 
-1. 撤销前一个动画集的运行时动画状态；
-2. 把当前 SrAnimationSet 写到 runtime scene `+0x70`；
-3. 读取 ANMS `0x18`，以同一 raw frame 初始化动画集和每个已找到的 ANIM；
-4. 读取 ANMS `0x19` 写入 runtime scene `+0x5C`；该地址相对内嵌 runtime animation `+0x3C` 正好是 `+0x20`，与已闭环的 runtime duration 字段一致；
-5. 对每个 SANM 调用 `sub_AD7760`，把 `(SANM+0x40 != 0)` 直接写到对应 runtime LAYR `+0x168`；
-6. 对非空 ANIM 立即调用 `srd_set_animation_frame_raw` 和动画通道应用器。
+| 对象 | 偏移 | 已证明内容 |
+| --- | ---: | --- |
+| `SrAnimationSet` (`0x30`) | `+0x00` | 虚表 |
+| | `+0x04` | parsed `ANMS *` |
+| | `+0x08` | `std::string` 名称 |
+| | `+0x20` | owning runtime `SrScene *` |
+| | `+0x24` | `SrSetAnimation *` 向量 |
+| `SrSetAnimation` (`0x28`) | `+0x00` | 虚表 |
+| | `+0x04` | parsed `SANM *` |
+| | `+0x08` | `std::string` 动画名 |
+| | `+0x20` | 同下标 runtime `SrLayer *` |
+| | `+0x24` | 已解析 runtime `SrAnimation *`，可为空 |
 
-所以 `ANMS` 不是仅供编辑器分组的元数据，而是场景级同步动画与互斥 layer gate。未选择 ANMS 时把所有 LAYR 同时绘制，不符合游戏运行时。
+### 选择时序与独立场景时钟
+
+runtime scene 在 `+0x3C` 内嵌一个 `0x34` 字节动画时钟：raw frame 位于 scene `+0x58`，duration 位于 `+0x5C`，三个播放因子位于 `+0x60/+0x64/+0x68`，flags 位于 `+0x6C`；当前 `SrAnimationSet *` 位于 `+0x70`。
+
+`sub_AC2FD0` 选择一个 `SrAnimationSet` 时：
+
+1. 撤销前一动画集关联的 active-animation 状态；
+2. 把新 `SrAnimationSet *` 写到 runtime scene `+0x70`；
+3. 以 ANMS `+0x40` 的 raw frame 和 `+0x44` 的 duration 重置 scene `+0x3C` 时钟；
+4. 对每个 SANM 调用 `sub_AD7760`，把 `(SANM+0x40 != 0)` 直接写到配对 runtime LAYR `+0x168`；
+5. 对每个非空 ANIM 写入同一 raw frame，并加入该 layer 的 active-animation 列表。
+
+这里**没有**调用 `srd_apply_animation_motion_set`，所以选择函数不立即执行 `MOT/TRK/KEY`。下一次 layer 动画更新 `0xABE3F0` 才把调度标量写到 active ANIM `+0x2C`，并调用 `0xAD52B0(true)` 先推进时钟、再应用公共及 CAST 专属通道。旧结论“选择时立即应用动画通道”不成立。
+
+scene 时钟与各 layer ANIM 从同一 raw frame 开始并接收同一调度标量，但之后各自维护 frame、duration、播放因子和 flags；它们不是持续主从同步。`sub_AC2F60` 的动画集完成查询读取 scene 时钟完成位与 ANMS duration，不聚合每个 layer ANIM 的完成状态。
+
+所以 `ANMS` 是场景级页面/动画编排器：它决定 layer gate、每层的具名动画、共同起始 frame 和独立的集合完成 duration；它不是轨道容器，也不负责在选择调用内求值 CAST 属性。未选择 ANMS 时，没有 SANM 页面 gate 被应用，剩余 scene/layer/cast gate 仍可使场景构造、更新和绘制。
 
 ## identity 解码
 
@@ -85,7 +107,7 @@ animation_set_index = (identity & 0x3FF) - 1
 Rust 当前实现：
 
 - 解析并保存 ANMS/SANM；
-- `ProjectRuntime::apply_animation_set` 按 SANM 下标设置 layer gate，并以同一 frame 应用命名 ANIM；
+- `ProjectRuntime::apply_animation_set` 按 SANM 下标设置 layer gate，并在调用者显式给出的 frame 上求值命名 ANIM；这个编辑器操作组合了“原生选择状态 + 后续一次采样”，不声称原生 `sub_AC2FD0` 本身应用 TRK；
 - Composition 使用显式选择的 ANMS 与时间轴 frame 构建 draw；
 - 原先的“所有初始 LAYR”构建器仅保留给底层诊断与单贴图 smoke，不再作为正常页面预览。
 

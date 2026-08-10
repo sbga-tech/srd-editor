@@ -1,20 +1,24 @@
 # 编辑器 D3D9Ex、HiDPI 与 Dear ImGui 后端
 
+> **历史实现记录。** 本页的 D3D9Ex device/readback 证据仍有效，但其中 Dear ImGui 前端与对应源码已由 `iced` 四面板编辑器替换。当前应用与 preview-adapter 边界见根目录 [`README.md`](../../README.md#editor-architecture)。
+
 本页记录编辑器基础设施的实际实现和验证边界。它不作为 Surfride 游戏渲染语义的证据；游戏侧的顶点、状态、shader 和资源结论仍必须分别由二进制调用链闭环。
 
 ## 架构与依赖边界
 
-编辑器按 Rust 构建宿主机的原生指令集发布，不绑定原游戏的 32 位 x86 ABI。当前实现通过 `windows-rs` 直接调用系统 `d3d9.dll`：
+编辑器按 Rust 构建宿主机的原生指令集发布，不绑定原游戏的 32 位 x86 ABI。当前 preview renderer 通过 `windows-rs` 使用 D3D9 COM ABI，但 provider 由 [`renderer/d3d9/dxvk.rs`](../../src/renderer/d3d9/dxvk.rs) 通过 `libloading` 显式提供，不静默绑定系统 `d3d9.dll`：
 
-- `Direct3DCreate9Ex(D3D_SDK_VERSION)` 和 `IDirect3D9Ex::CreateDeviceEx`；
+- Windows 加载官方 DXVK package 的 `d3d9.dll`，以 desktop `HWND` 创建 device；
+- Linux 加载官方 DXVK Native `libdxvk_d3d9.so.0.30002`，以主线程创建的隐藏 SDL3 Vulkan window 作为 WSI handle；
+- 两个平台调用同一个 `Direct3DCreate9Ex(D3D_SDK_VERSION)`、`IDirect3D9Ex::CreateDeviceEx`、submission 与 RGBA readback 实现；
 - 默认 adapter、`D3DDEVTYPE_HAL`、windowed discard swap chain；
 - 优先 hardware vertex processing，创建失败后退到 software vertex processing；
 - `D3DFMT_D24S8` 自动 depth/stencil；
 - `D3DPRESENT_INTERVAL_ONE`。
 
-运行时不链接、不加载也不调用 D3DX 或 NVIDIA Cg。Cg 仅存在于隔离的离线 shader 取证流程中，详见 [`render-shader-bytecode.md`](render-shader-bytecode.md)。
+运行时不链接、不加载也不调用 D3DX 或 NVIDIA Cg。Cg 仅存在于隔离的离线 shader 取证流程中，详见 [`render-shader-bytecode.md`](render-shader-bytecode.md)。DXVK runtime 的固定版本、校验和、discovery order、Linux SDL3 依赖与平台失败策略见根目录 [`README.md`](../../README.md#dxvk-runtime)。
 
-初始化还会把首个证据闭环 fixture 的嵌入式 `vs_3_0/ps_3_0` token 直接交给同一个 `IDirect3DDevice9Ex::CreateVertexShader/CreatePixelShader`。创建失败会中止编辑器启动或 smoke test；这一验证不加载 Cg/D3DX。
+初始化还会把首个证据闭环 fixture 的嵌入式 `vs_3_0/ps_3_0` token 直接交给同一个 `IDirect3DDevice9Ex::CreateVertexShader/CreatePixelShader`。创建失败由 preview adapter 边界报告为 unavailable error；不会降级到 CPU，也不会伪装成 reference-accurate output。
 
 ## Dear ImGui renderer
 
@@ -67,7 +71,7 @@ Windows 上 winit 优先调用 Per-Monitor V2 DPI awareness，系统不支持时
 - 右侧 `Properties`；
 - 下方 `Layers & Timeline`，固定的层/状态列和可横向滚动的时间轴位于同一张 table，因此共享垂直滚动和行选择。
 
-命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene、ANMS/SANM、layer/NODE、变换、纹理与动画 frame。Properties 的 ANMS 选择器和下方 frame slider 会重建当前运行时页面；Composition 不再把同一 SCN 的所有互斥 LAYR 同时提交。普通预览重建现在生成统一 Image/SliceCell/NumberGlyph/Fennel runtime draw，并经 target filter、scene pass planner 与相邻 merge planner 后在同一个 D3D9Ex Composition pass 内按 source 顺序提交。普通编辑器打开独立 SRD 时不会再把 SRD CAM 冒充为 target Camera；在用户选择宿主 profile 前，Composition 明确显示 `Host target/camera profile not selected`。已有 GPU smoke 仍可用，但其 project-camera host 只在 smoke flag 下显式构造并标记为诊断输入。
+命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板按 NODE 的 `firstChild`/`nextSibling` 关系显示真实 scene、ANMS/SANM、layer/CAST 层级，变换、纹理与动画 frame 仍来自解析结构。Properties 的 ANMS 选择器和下方 frame slider 会重建当前运行时页面；Composition 不再把同一 SCN 的所有互斥 LAYR 同时提交。普通预览重建生成统一 Image/SliceCell/NumberGlyph/Fennel runtime draw，并经 target filter、scene pass planner 与相邻 merge planner 后在同一个 D3D9Ex Composition pass 内按 source 顺序提交。交互编辑器固定使用 MainScene 路由，内部沿用已验证的 AdvertiseLogo pass/filter/layer 常量，不再暴露 `Preview target` 选择器；reference/corpus 测试仍可显式传入其他已还原 profile。Composition 始终用当前 SRD 项目内嵌 `PROJ -> CAM ` 覆盖固定 host context 的 target `Projection*View`，缺少 `CAM ` 时精确保留全零 camera fallback。
 
 Properties 还可显式加载第二个 Common background SRD，分别选择其 SCN/ANMS/frame。双文档各自构造 DDS、RFZ atlas、runtime stream 与 target submission，Composition 只清屏一次并先提交 Common、再提交前景；ResetEx 同时重建两组资源。编辑器不会根据前景文件名自动猜背景，且两个 SCN 尺寸不一致时直接拒绝未经证明的缩放。对象列表证据和边界见 [`chusan-common-foreground-composition.md`](chusan-common-foreground-composition.md)。
 

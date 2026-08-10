@@ -35,7 +35,7 @@
 - Ceylon shader cache key、SRD vertex format 与 ShapeEnv 模块索引：[`evidence/render-shader-key.md`](evidence/render-shader-key.md)
 - SRD 实际 SimpleShaderSelector、18 字节键与 71 项 feature 表：[`evidence/render-simple-selector.md`](evidence/render-simple-selector.md)
 - Simple Cg source/公式、canonical assembly 与无 D3DX D3D9 bytecode：[`evidence/render-shader-source.md`](evidence/render-shader-source.md)、[`evidence/render-shader-bytecode.md`](evidence/render-shader-bytecode.md)
-- 编辑器原生 D3D9Ex device、Dear ImGui renderer、HiDPI/ResetEx 生命周期与 AE 风格工作区：[`evidence/editor-d3d9-backend.md`](evidence/editor-d3d9-backend.md)
+- 已替换的 D3D9Ex/ImGui 编辑器前端之历史 device、HiDPI 与 ResetEx 证据（当前 UI 架构见根目录 README）：[`evidence/editor-d3d9-backend.md`](evidence/editor-d3d9-backend.md)
 - 首个 stage-0 贴图 draw、完整 Composition 回读及宿主 `FirstCalcMatrix` 边界：[`evidence/render-first-textured-draw.md`](evidence/render-first-textured-draw.md)
 - Chusan `AdvertiseLogoObject` 的实际 SrPlayer common-init 与 identity 根节点：[`evidence/chusan-advertise-logo-player.md`](evidence/chusan-advertise-logo-player.md)
 - Chusan `PlayLinkedVerseGateObject` 的资源 id 84、`2DLayer=70` 与 null-target 宿主：[`evidence/chusan-linked-verse-gate-player.md`](evidence/chusan-linked-verse-gate-player.md)

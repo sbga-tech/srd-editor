@@ -33,7 +33,7 @@ use crate::render::{
     select_srd_image_render_preset,
 };
 use crate::ruhuna::RuhunaRuntimeFont;
-use crate::scene::{Layer, Project, ReferenceTarget};
+use crate::scene::{AnimationSetDefinition, Layer, Project, ReferenceTarget};
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::embedded_simple_shader_pair;
 use crate::target_pass::{
@@ -1296,6 +1296,42 @@ pub fn build_evidence_complete_initial_runtime_cast_draws(
     validate_host_draw_context(host)?;
     let runtime = ProjectRuntime::new(project)
         .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    build_evidence_complete_runtime_cast_draws_from_runtime(
+        project,
+        textures,
+        scene_index,
+        host,
+        font_registry,
+        runtime_fonts,
+        force_color_update,
+        runtime_text_inputs,
+        &runtime,
+        true,
+    )
+}
+
+/// Builds a complete runtime CAST stream from an arbitrary dense ANMS
+/// assignment. The assignment need not be stored in the scene and can be an
+/// editor-owned scratch clone.
+#[allow(clippy::too_many_arguments)]
+pub fn build_evidence_complete_animation_assignment_runtime_cast_draws(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    animation_assignment: &AnimationSetDefinition,
+    frame: f32,
+    host: SrdHostDrawContext,
+    font_registry: &FennelFontSlotRegistry<Vec<u8>>,
+    runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
+    force_color_update: bool,
+    runtime_text_inputs: &BTreeMap<FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput>,
+) -> Result<Vec<EvidenceCompleteRuntimeCastDraw>, SrdDrawError> {
+    validate_host_draw_context(host)?;
+    let mut runtime = ProjectRuntime::new(project)
+        .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    runtime
+        .apply_animation_set_definition(project, textures, scene_index, animation_assignment, frame)
+        .map_err(|error| SrdDrawError(format!("failed to apply animation assignment: {error}")))?;
     build_evidence_complete_runtime_cast_draws_from_runtime(
         project,
         textures,

@@ -19,7 +19,7 @@ impl fmt::Display for CameraError {
 
 impl std::error::Error for CameraError {}
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CameraDefinition {
     pub position: [f32; 3],
     pub target: [f32; 3],
@@ -28,7 +28,20 @@ pub struct CameraDefinition {
     pub far: f32,
 }
 
+impl Default for CameraDefinition {
+    fn default() -> Self {
+        Self::ZERO_FALLBACK
+    }
+}
+
 impl CameraDefinition {
+    pub const ZERO_FALLBACK: Self = Self {
+        position: [0.0; 3],
+        target: [0.0; 3],
+        angle_units: 0,
+        near: 0.0,
+        far: 0.0,
+    };
     pub fn from_project_block(file: &SrdFile, project: &Block) -> Result<Self, CameraError> {
         if !project.is_tag(b"PROJ") {
             return Err(CameraError("camera parent block is not PROJ".into()));
@@ -321,6 +334,25 @@ mod tests {
             ..CameraDefinition::default()
         };
         assert_eq!(camera.angle_degrees().to_bits(), 0x4233_fa60);
+    }
+
+    #[test]
+    fn project_without_camera_block_uses_exact_zero_fallback() {
+        let file = SrdFile::parse(b"VTBF\0\0\0\0SRFF\0\0\0\0".to_vec()).unwrap();
+        let project = Block {
+            offset: 16,
+            sub_sig: [0; 4],
+            size_field: 0,
+            tag: *b"PROJ",
+            properties: Vec::new(),
+            property_tail: 0..0,
+            children: Vec::new(),
+        };
+
+        assert_eq!(
+            CameraDefinition::from_project_block(&file, &project).unwrap(),
+            CameraDefinition::ZERO_FALLBACK,
+        );
     }
 
     #[test]

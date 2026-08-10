@@ -16,9 +16,16 @@ Advertise/Common 的空 property 2 已闭环为 null lookup：Scene 管理器构
 
 当前先完成 SRD 核心解析/渲染行为，以下编辑器问题暂不打断主线：
 
-- 普通预览在 Debug 构建中一帧耗时异常，需用阶段计时确认是否重复 rebuild、字体 atlas/贴图上传、提交构造或 GPU 同步；
+- WebGPU 的 1920×1080 Debug readback 已移除逐像素 RGBA->BGRA->RGBA 往返。Apple M5 Max/Metal 隔离 submission+readback 从约 76 ms 降到约 3.3 ms；完整 Common background steady frame 为 10.4–14.1 ms（plan 6.1–7.6 ms、draw 2.3–3.9 ms、readback 1.9–3.2 ms），Advertise/Fennel 为 4.9–7.6 ms。剩余瓶颈集中在冷帧资源/字体 atlas/pipeline 建立（对应样本约 0.40 s 与 2.71 s）、iced 主线程同步全帧回读及上传到独立 `wgpu` device；后续优化应做缓存失效细化与 GPU 内直接交接，不得降低解析或绘制精度；
 - `Play` 按钮当前不会按真实时间推进 timeline frame；
-- Common background 的最终运行时 Camera/viewport 修正完成后，再恢复其实机整幅构图回归。
+- 编辑器现已固定按 SCN composition aspect 使用项目内嵌 `PROJ -> CAM `，缺少 `CAM ` 时精确使用全零 fallback；Common background 的最终游戏 host Camera/viewport 修正只影响未来实机像素对照，不再作为编辑器可选相机模式。
+- Layer 创建；
+- Layer 删除；
+- CAST 创建；
+- CAST 删除；
+- NODE 复制与粘贴；
+- NODE 在层级或 Layer 之间移动；
+- NODE 原地复制（duplicate）。
 
 这些问题不得通过降低解析精度、跳过 draw 或伪造固定相机来“优化”。
 

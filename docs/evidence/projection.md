@@ -187,7 +187,7 @@ Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从�
 
 ## 尚未闭环
 
-- 编辑器打开独立 SRD 时应采用哪一种宿主预览 target/camera；游戏语义允许同一全局 packet 被多个注册 target 分别过滤，不存在可由 SRD 单独推出的唯一值。
+- 游戏中各 host target 在具体时刻采用的 Camera 仍不能由独立 SRD 推出；编辑器交互策略已经固定为始终使用项目内嵌 `PROJ -> CAM `，缺失时保持 position、target、angle、near、far 全零，不把某个已知 host 构造 Camera 伪装为文件属性。
 - 各个实际 Chusan 画面在具体时刻注册了哪些 target，以及其 camera/scene-node 数值。
 - 3D CAST 的 world XYZ、packet world matrix 与 target `Projection*View` 提交链已闭环；命名 target 下 ImageCast、SliceCast、NumberCast 与 2D/3D Fennel 四角投影/AABB 剔除已实现。3D TextCast 的独立 TextBox matrix 分流见 [`textcast-3d.md`](textcast-3d.md)。Advertise/Common 的空字符串 lookup 已闭环为 null；原二进制在该分支读取未初始化可见性矩形。仍待闭合的是特殊 depth/stencil 分支及未覆盖的其他 target 配置。
 - Camera OffsetX/OffsetY 是否存在 SRD renderer 之外的运行时写入者。

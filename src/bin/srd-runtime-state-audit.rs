@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use srd_editor::csli::multiply_color_game;
-use srd_editor::editor_document::EditorDocument;
+use srd_editor::document::EditorDocument;
 use srd_editor::game_host::{
     CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_COMMON_BACKGROUND_PLAYER, CHUSAN_MAIN_SCENE,
 };

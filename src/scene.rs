@@ -44,6 +44,116 @@ impl NodeRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrCastKind {
+    Null,
+    Image,
+    Text,
+    Slice,
+    Reference,
+    Number,
+}
+
+impl SrCastKind {
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Null => "NullCast",
+            Self::Image => "ImageCast",
+            Self::Text => "TextCast",
+            Self::Slice => "SliceCast",
+            Self::Reference => "ReferenceCast",
+            Self::Number => "NumberCast",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CastPayloads(u8);
+
+impl CastPayloads {
+    pub const IMAGE: Self = Self(1 << 0);
+    pub const SLICE: Self = Self(1 << 1);
+    pub const REFERENCE: Self = Self(1 << 2);
+    pub const NUMBER: Self = Self(1 << 3);
+
+    pub fn contains(self, payload: Self) -> bool {
+        self.0 & payload.0 != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn record_name(self) -> &'static str {
+        match self {
+            Self::IMAGE => "CIMG",
+            Self::SLICE => "CSLI",
+            Self::REFERENCE => "CRFD",
+            Self::NUMBER => "CNUM",
+            _ => "payload",
+        }
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = Self> {
+        [Self::IMAGE, Self::SLICE, Self::REFERENCE, Self::NUMBER]
+            .into_iter()
+            .filter(move |payload| self.contains(*payload))
+    }
+}
+
+impl std::ops::BitOrAssign for CastPayloads {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CastClassification {
+    pub kind: SrCastKind,
+    pub serialized_type: Option<u8>,
+    pub present_payloads: CastPayloads,
+    pub inactive_text_payload: bool,
+}
+
+impl CastClassification {
+    pub fn expected_payload(self) -> Option<CastPayloads> {
+        match self.kind {
+            SrCastKind::Null => None,
+            SrCastKind::Image | SrCastKind::Text => Some(CastPayloads::IMAGE),
+            SrCastKind::Slice => Some(CastPayloads::SLICE),
+            SrCastKind::Reference => Some(CastPayloads::REFERENCE),
+            SrCastKind::Number => Some(CastPayloads::NUMBER),
+        }
+    }
+
+    pub fn missing_expected_payload(self) -> bool {
+        self.expected_payload()
+            .is_some_and(|expected| !self.present_payloads.contains(expected))
+    }
+
+    pub fn extra_payloads(self) -> CastPayloads {
+        let expected = self.expected_payload();
+        let mut extras = CastPayloads::default();
+        for payload in self.present_payloads.iter() {
+            if Some(payload) != expected {
+                extras |= payload;
+            }
+        }
+        extras
+    }
+
+    pub fn unsupported_serialized_type(self) -> Option<u8> {
+        self.serialized_type.filter(|value| *value > 4)
+    }
+
+    pub fn has_diagnostics(self) -> bool {
+        self.missing_expected_payload()
+            || !self.extra_payloads().is_empty()
+            || self.inactive_text_payload
+            || self.unsupported_serialized_type().is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hierarchy {
     pub parents: Vec<Option<usize>>,
@@ -305,6 +415,55 @@ pub struct Layer {
 }
 
 impl Layer {
+    pub fn classify_cast(&self, node_index: usize) -> Option<CastClassification> {
+        let node = self.nodes.get(node_index)?;
+        let image = self.image_by_node.get(node_index).and_then(Option::as_ref);
+        let mut present_payloads = CastPayloads::default();
+        if image.is_some() {
+            present_payloads |= CastPayloads::IMAGE;
+        }
+        if self
+            .csli_by_node
+            .get(node_index)
+            .is_some_and(Option::is_some)
+        {
+            present_payloads |= CastPayloads::SLICE;
+        }
+        if self
+            .reference_by_node
+            .get(node_index)
+            .is_some_and(Option::is_some)
+        {
+            present_payloads |= CastPayloads::REFERENCE;
+        }
+        if self
+            .number_by_node
+            .get(node_index)
+            .is_some_and(Option::is_some)
+        {
+            present_payloads |= CastPayloads::NUMBER;
+        }
+
+        let serialized_type = node.cast_type();
+        let kind = match serialized_type {
+            Some(1) if image.is_some_and(ImageDefinition::creates_text_cast) => SrCastKind::Text,
+            Some(1) => SrCastKind::Image,
+            Some(2) => SrCastKind::Slice,
+            Some(3) => SrCastKind::Reference,
+            Some(4) => SrCastKind::Number,
+            Some(0) | None | Some(_) => SrCastKind::Null,
+        };
+        let inactive_text_payload = serialized_type == Some(1)
+            && image.is_some_and(|image| image.has_text_child && !image.creates_text_cast());
+
+        Some(CastClassification {
+            kind,
+            serialized_type,
+            present_payloads,
+            inactive_text_payload,
+        })
+    }
+
     pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, SceneError> {
         if !block.is_tag(b"LAYR") {
             return Err(SceneError("block is not LAYR".into()));
@@ -1085,5 +1244,109 @@ fn cvtt_f32_to_i32(value: f32) -> i32 {
         i32::MIN
     } else {
         value.trunc() as i32
+    }
+}
+
+#[cfg(test)]
+mod cast_classification_tests {
+    use super::*;
+
+    fn image(flags: u32, has_text_child: bool) -> ImageDefinition {
+        ImageDefinition {
+            flags,
+            width: 128.0,
+            height: 128.0,
+            custom_origin: [0.0; 2],
+            origin_mode: 0,
+            vertex_colors: [[0xff; 4]; 4],
+            cref_index: -1,
+            cref_count: 0,
+            crefs: Vec::new(),
+            field_4c: 0,
+            cre1_index: -1,
+            cre1_count: 0,
+            cre1s: Vec::new(),
+            coordinate_offsets: [[0.0; 2]; 2],
+            field_a1: 0,
+            node_index: 0,
+            has_text_child,
+            text: None,
+        }
+    }
+
+    fn layer(serialized_type: Option<u8>, image: Option<ImageDefinition>) -> Layer {
+        Layer {
+            name: Vec::new(),
+            flags: 0,
+            animation_count: 0,
+            animations: Vec::new(),
+            field_23: Vec::new(),
+            nodes: vec![NodeRecord {
+                name: None,
+                type_flags: serialized_type.map(u32::from),
+                parent_csli_cell_index: None,
+                first_child_index: -1,
+                next_sibling_index: -1,
+                field_a0: None,
+            }],
+            transforms: Vec::new(),
+            image_by_node: vec![image],
+            number_by_node: vec![None],
+            reference_by_node: vec![None],
+            csli_by_node: vec![None],
+            cast_attribute_lists: Vec::new(),
+            cast_attribute_list_by_node: vec![None],
+        }
+    }
+
+    #[test]
+    fn classification_matches_runtime_factory_for_every_node_type() {
+        for (serialized_type, expected) in [
+            (None, SrCastKind::Null),
+            (Some(0), SrCastKind::Null),
+            (Some(1), SrCastKind::Image),
+            (Some(2), SrCastKind::Slice),
+            (Some(3), SrCastKind::Reference),
+            (Some(4), SrCastKind::Number),
+            (Some(7), SrCastKind::Null),
+        ] {
+            assert_eq!(
+                layer(serialized_type, None).classify_cast(0).unwrap().kind,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn type_one_uses_the_exact_text_factory_condition() {
+        let text = layer(Some(1), Some(image(0x100, true)))
+            .classify_cast(0)
+            .unwrap();
+        assert_eq!(text.kind, SrCastKind::Text);
+        assert!(!text.inactive_text_payload);
+        assert!(!text.missing_expected_payload());
+
+        let inactive = layer(Some(1), Some(image(0, true)))
+            .classify_cast(0)
+            .unwrap();
+        assert_eq!(inactive.kind, SrCastKind::Image);
+        assert!(inactive.inactive_text_payload);
+    }
+
+    #[test]
+    fn diagnostics_preserve_runtime_kind_for_malformed_payloads() {
+        let slice = layer(Some(2), Some(image(0, false)))
+            .classify_cast(0)
+            .unwrap();
+        assert_eq!(slice.kind, SrCastKind::Slice);
+        assert!(slice.missing_expected_payload());
+        assert_eq!(slice.extra_payloads(), CastPayloads::IMAGE);
+
+        let unsupported = layer(Some(7), Some(image(0, false)))
+            .classify_cast(0)
+            .unwrap();
+        assert_eq!(unsupported.kind, SrCastKind::Null);
+        assert_eq!(unsupported.unsupported_serialized_type(), Some(7));
+        assert_eq!(unsupported.extra_payloads(), CastPayloads::IMAGE);
     }
 }

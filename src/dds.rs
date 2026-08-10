@@ -533,9 +533,23 @@ impl DdsDescriptor {
             ));
         }
         let image_format = match self.format {
+            GameTextureFormat::A4_R4_G4_B4 => image_dds::ImageFormat::Bgra4Unorm,
             GameTextureFormat::A8_R8_G8_B8 => image_dds::ImageFormat::Bgra8Unorm,
+            GameTextureFormat::R8_G8_B8 => image_dds::ImageFormat::Bgr8Unorm,
+            GameTextureFormat::A8_B8_G8_R8 => image_dds::ImageFormat::Rgba8Unorm,
             GameTextureFormat::DXT1 => image_dds::ImageFormat::BC1RgbaUnorm,
-            GameTextureFormat::DXT5 => image_dds::ImageFormat::BC3RgbaUnorm,
+            GameTextureFormat::DXT2 | GameTextureFormat::DXT3 => {
+                image_dds::ImageFormat::BC2RgbaUnorm
+            }
+            GameTextureFormat::DXT4 | GameTextureFormat::DXT5 => {
+                image_dds::ImageFormat::BC3RgbaUnorm
+            }
+            GameTextureFormat::R16F => image_dds::ImageFormat::R16Float,
+            GameTextureFormat::G16_R16F => image_dds::ImageFormat::Rg16Float,
+            GameTextureFormat::A16_B16_G16_R16F => image_dds::ImageFormat::Rgba16Float,
+            GameTextureFormat::R32F => image_dds::ImageFormat::R32Float,
+            GameTextureFormat::G32_R32F => image_dds::ImageFormat::Rg32Float,
+            GameTextureFormat::A32_B32_G32_R32F => image_dds::ImageFormat::Rgba32Float,
             format => {
                 return Err(DdsError(format!(
                     "independent DDS decoder has no proven mapping for game format {}",

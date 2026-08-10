@@ -3,7 +3,7 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use srd_editor::animation::{KeyData, Track};
-use srd_editor::editor_document::{EditorDocument, display_srd_name};
+use srd_editor::document::{EditorDocument, display_srd_name};
 use srd_editor::projection::{
     identity_matrix4x4_game, mul_matrix4x4_game, project_point_to_screen_game, viewport_matrix_game,
 };
@@ -28,7 +28,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let document = EditorDocument::load(&path)?;
 
-    println!("file={}", document.path.display());
+    println!(
+        "file={}",
+        document.path().expect("loaded document path").display()
+    );
     println!(
         "project={:?} scenes={} fonts={} textures={}",
         display_srd_name(&document.project.name),

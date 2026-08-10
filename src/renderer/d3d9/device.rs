@@ -1,19 +1,14 @@
-use std::ffi::c_void;
 use std::ptr;
 
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::Graphics::Direct3D9::{
-    D3D_SDK_VERSION, D3DADAPTER_DEFAULT, D3DCLEAR_STENCIL, D3DCLEAR_TARGET, D3DCLEAR_ZBUFFER,
+use super::bindings::{
+    BOOL, D3DADAPTER_DEFAULT, D3DCLEAR_STENCIL, D3DCLEAR_TARGET, D3DCLEAR_ZBUFFER,
     D3DCREATE_HARDWARE_VERTEXPROCESSING, D3DCREATE_SOFTWARE_VERTEXPROCESSING, D3DDEVTYPE_HAL,
     D3DFMT_D24S8, D3DFMT_UNKNOWN, D3DLOCKED_RECT, D3DMULTISAMPLE_NONE, D3DPOOL_SYSTEMMEM,
-    D3DPRESENT_INTERVAL_ONE, D3DPRESENT_PARAMETERS, D3DSURFACE_DESC, D3DSWAPEFFECT_DISCARD,
-    Direct3DCreate9Ex, IDirect3D9Ex, IDirect3DDevice9, IDirect3DDevice9Ex,
+    D3DPRESENT_INTERVAL_ONE, D3DPRESENT_PARAMETERS, D3DSURFACE_DESC, D3DSWAPEFFECT_DISCARD, Error,
+    HRESULT, HWND, IDirect3D9Ex, IDirect3DDevice9, IDirect3DDevice9Ex, Interface, RECT, Result,
 };
-use windows::core::{BOOL, Error, HRESULT, Result};
-use winit::dpi::PhysicalSize;
-use winit::window::Window;
 
+use super::dxvk::DxvkProvider;
 use crate::shader_bytecode::EmbeddedSimpleShaderPair;
 
 const E_FAIL: HRESULT = HRESULT(0x8000_4005_u32 as i32);
@@ -34,32 +29,31 @@ pub enum D3d9ExDeviceStatus {
     Minimized,
 }
 
-/// Owns the native Direct3D 9Ex interface, device and reset parameters.
-///
-/// The wrapper intentionally uses only `d3d9.dll`; it does not load D3DX or
-/// any NVIDIA Cg runtime. COM interface widths are supplied by `windows-rs`,
-/// so the same source builds for every Windows host architecture supported by
-/// the Rust toolchain.
+/// Owns a DXVK-backed Direct3D 9Ex interface, device, provider lifetime, and
+/// reset parameters. DXVK is loaded explicitly on every supported platform;
+/// this module never links or falls back to the Windows system `d3d9.dll`.
 pub struct D3d9ExDevice {
-    _direct3d: IDirect3D9Ex,
     device: IDirect3DDevice9Ex,
+    base_device: IDirect3DDevice9,
+    _direct3d: IDirect3D9Ex,
     present: D3DPRESENT_PARAMETERS,
     hwnd: HWND,
-    size: PhysicalSize<u32>,
+    size: [u32; 2],
     reset_pending: bool,
+    provider_label: String,
+    _provider: DxvkProvider,
 }
 
 impl D3d9ExDevice {
-    pub fn new(window: &Window) -> Result<Self> {
-        let hwnd = hwnd_from_window(window)?;
-        let size = window.inner_size();
+    pub fn new_offscreen(size: [u32; 2]) -> Result<Self> {
+        let provider = DxvkProvider::load().map_err(|message| Error::new(E_FAIL, message))?;
+        let provider_label = provider.label();
+        let hwnd = provider.window_handle();
+        let size = [size[0].max(1), size[1].max(1)];
         let mut present = make_present_parameters(hwnd, size);
-        let direct3d = unsafe { Direct3DCreate9Ex(D3D_SDK_VERSION) }.map_err(|error| {
-            Error::new(
-                error.code(),
-                format!("Direct3DCreate9Ex failed to create IDirect3D9Ex: {error}"),
-            )
-        })?;
+        let direct3d = provider
+            .create_direct3d9_ex()
+            .map_err(|message| Error::new(E_FAIL, message))?;
 
         let device = match create_device(
             &direct3d,
@@ -75,27 +69,32 @@ impl D3d9ExDevice {
                 D3DCREATE_SOFTWARE_VERTEXPROCESSING as u32,
             )
             .map_err(|software_error| {
-                Error::new(
-                    software_error.code(),
-                    format!(
-                        "IDirect3D9Ex::CreateDeviceEx failed with hardware vertex processing ({hardware_error}) and software vertex processing ({software_error})"
-                    ),
-                )
+                Error::new(software_error.code(), format!(
+                    "DXVK IDirect3D9Ex::CreateDeviceEx failed with hardware vertex processing ({hardware_error}) and software vertex processing ({software_error})"
+                ))
             })?,
         };
+        let base_device = device.cast()?;
 
         Ok(Self {
             _direct3d: direct3d,
             device,
+            base_device,
             present,
             hwnd,
             size,
             reset_pending: false,
+            provider_label,
+            _provider: provider,
         })
     }
 
+    pub fn provider_label(&self) -> &str {
+        &self.provider_label
+    }
+
     pub fn device(&self) -> &IDirect3DDevice9 {
-        &self.device
+        &self.base_device
     }
 
     pub fn validate_shader_pair(&self, pair: &EmbeddedSimpleShaderPair) -> Result<()> {
@@ -108,11 +107,11 @@ impl D3d9ExDevice {
         Ok(())
     }
 
-    pub fn resize(&mut self, size: PhysicalSize<u32>) {
+    pub fn resize(&mut self, size: [u32; 2]) {
         self.size = size;
-        if size.width != 0 && size.height != 0 {
-            self.present.BackBufferWidth = size.width;
-            self.present.BackBufferHeight = size.height;
+        if size[0] != 0 && size[1] != 0 {
+            self.present.BackBufferWidth = size[0];
+            self.present.BackBufferHeight = size[1];
             self.reset_pending = true;
         }
     }
@@ -130,7 +129,7 @@ impl D3d9ExDevice {
     }
 
     pub fn status(&mut self) -> Result<D3d9ExDeviceStatus> {
-        if self.size.width == 0 || self.size.height == 0 {
+        if self.size[0] == 0 || self.size[1] == 0 {
             return Ok(D3d9ExDeviceStatus::Minimized);
         }
 
@@ -235,23 +234,10 @@ impl D3d9ExDevice {
     }
 }
 
-fn hwnd_from_window(window: &Window) -> Result<HWND> {
-    let handle = window
-        .window_handle()
-        .map_err(|error| Error::new(E_FAIL, format!("failed to obtain Win32 HWND: {error}")))?;
-    match handle.as_raw() {
-        RawWindowHandle::Win32(handle) => Ok(HWND(handle.hwnd.get() as usize as *mut c_void)),
-        _ => Err(Error::new(
-            E_FAIL,
-            "the D3D9 editor requires a Win32 window handle",
-        )),
-    }
-}
-
-fn make_present_parameters(hwnd: HWND, size: PhysicalSize<u32>) -> D3DPRESENT_PARAMETERS {
+fn make_present_parameters(hwnd: HWND, size: [u32; 2]) -> D3DPRESENT_PARAMETERS {
     D3DPRESENT_PARAMETERS {
-        BackBufferWidth: size.width.max(1),
-        BackBufferHeight: size.height.max(1),
+        BackBufferWidth: size[0].max(1),
+        BackBufferHeight: size[1].max(1),
         BackBufferFormat: D3DFMT_UNKNOWN,
         BackBufferCount: 1,
         MultiSampleType: D3DMULTISAMPLE_NONE,

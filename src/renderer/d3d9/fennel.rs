@@ -3,8 +3,7 @@ use std::ffi::c_void;
 use std::mem;
 use std::ptr;
 
-use windows::Win32::Foundation::RECT;
-use windows::Win32::Graphics::Direct3D9::{
+use super::bindings::{
     D3DLOCK_DISCARD, D3DPOOL_DEFAULT, D3DPT_TRIANGLELIST, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHAFUNC,
     D3DRS_ALPHAREF, D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP, D3DRS_BLENDOPALPHA,
     D3DRS_COLORWRITEENABLE, D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE,
@@ -12,36 +11,23 @@ use windows::Win32::Graphics::Direct3D9::{
     D3DRS_STENCILENABLE, D3DRS_ZENABLE, D3DRS_ZFUNC, D3DRS_ZWRITEENABLE, D3DSAMP_ADDRESSU,
     D3DSAMP_ADDRESSV, D3DSAMP_BORDERCOLOR, D3DSAMP_MAGFILTER, D3DSAMP_MAXANISOTROPY,
     D3DSAMP_MAXMIPLEVEL, D3DSAMP_MINFILTER, D3DSAMP_MIPFILTER, D3DSAMP_MIPMAPLODBIAS, D3DSBT_ALL,
-    D3DUSAGE_DYNAMIC, D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, IDirect3DDevice9,
+    D3DUSAGE_DYNAMIC, D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, Error, HRESULT, IDirect3DDevice9,
     IDirect3DPixelShader9, IDirect3DStateBlock9, IDirect3DVertexBuffer9,
-    IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
+    IDirect3DVertexDeclaration9, IDirect3DVertexShader9, RECT, Result,
 };
-use windows::core::{Error, HRESULT, Result};
 
-use crate::d3d9_srd::SrdDx9ExternalContext;
-use crate::d3d9_texture::RuhunaD3d9AtlasSet;
 use crate::fennel::{
     FennelRenderVertex, fennel_default_draw_packet, fennel_default_raster_state,
     fennel_default_shader_key,
 };
-use crate::render::{
-    CeylonDepthState, CeylonSrdFixedShaderConstants, FENNEL_D3D9_VERTEX_DECLARATION,
-    ceylon_d3d9_blend_preset,
-};
+use crate::render::{CeylonDepthState, FENNEL_D3D9_VERTEX_DECLARATION, ceylon_d3d9_blend_preset};
+use crate::renderer::backend::{FennelRenderBatch, SrdExternalRenderState};
+use crate::renderer::d3d9::texture::RuhunaD3d9AtlasSet;
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::{EmbeddedSimpleShaderPair, embedded_simple_shader_pair};
 
 const E_FAIL: HRESULT = HRESULT(0x8000_4005_u32 as i32);
 const E_INVALIDARG: HRESULT = HRESULT(0x8007_0057_u32 as i32);
-
-/// One already-laid-out Fennel texture batch. `sub_7C7F90` submits one such
-/// triangle-list batch per texture token, with six 28-byte vertices per glyph.
-pub struct EvidenceCompleteFennelBatch<'a> {
-    pub page_index: usize,
-    pub is_2d: bool,
-    pub fixed_constants: CeylonSrdFixedShaderConstants,
-    pub vertices: &'a [FennelRenderVertex],
-}
 
 pub struct FennelDx9Renderer {
     device: IDirect3DDevice9,
@@ -107,8 +93,8 @@ impl FennelDx9Renderer {
 
     pub fn render(
         &mut self,
-        batches: &[EvidenceCompleteFennelBatch<'_>],
-        external: SrdDx9ExternalContext,
+        batches: &[FennelRenderBatch<'_>],
+        external: SrdExternalRenderState,
         atlas: &RuhunaD3d9AtlasSet,
     ) -> Result<()> {
         if batches.is_empty() {
@@ -123,8 +109,8 @@ impl FennelDx9Renderer {
 
     fn render_batch(
         &mut self,
-        batch: &EvidenceCompleteFennelBatch<'_>,
-        external: SrdDx9ExternalContext,
+        batch: &FennelRenderBatch<'_>,
+        external: SrdExternalRenderState,
         atlas: &RuhunaD3d9AtlasSet,
     ) -> Result<()> {
         if batch.vertices.is_empty() {

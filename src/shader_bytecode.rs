@@ -82,21 +82,32 @@ pub const EMBEDDED_SIMPLE_SHADER_KEYS: [[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH]; 8
     keys
 };
 
+pub(crate) fn canonical_embedded_simple_shader_key(
+    key: &[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH],
+) -> Option<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH]> {
+    let canonical = match *key {
+        FENNEL_TEXTURED_SIMPLE_KEY => FIRST_TEXTURED_FIXTURE_SIMPLE_KEY,
+        FENNEL_TEXTURED_2D_SIMPLE_KEY => FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
+        _ => *key,
+    };
+    GAME_SIMPLE_SHADER_KEYS
+        .binary_search(&canonical)
+        .ok()
+        .map(|_| canonical)
+}
+
 pub fn embedded_simple_shader_pair(
     key: &[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH],
 ) -> Option<EmbeddedSimpleShaderPair> {
-    let requested_key = match *key {
-        FENNEL_TEXTURED_SIMPLE_KEY => &FIRST_TEXTURED_FIXTURE_SIMPLE_KEY,
-        FENNEL_TEXTURED_2D_SIMPLE_KEY => &FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
-        _ => key,
-    };
-    GAME_SIMPLE_SHADER_ENTRIES
-        .iter()
-        .find(|entry| entry.key == *requested_key)
-        .map(|entry| EmbeddedSimpleShaderPair {
-            vertex_shader: entry.vertex_shader,
-            pixel_shader: entry.pixel_shader,
-        })
+    let canonical = canonical_embedded_simple_shader_key(key)?;
+    let index = GAME_SIMPLE_SHADER_ENTRIES
+        .binary_search_by_key(&canonical, |entry| entry.key)
+        .ok()?;
+    let entry = &GAME_SIMPLE_SHADER_ENTRIES[index];
+    Some(EmbeddedSimpleShaderPair {
+        vertex_shader: entry.vertex_shader,
+        pixel_shader: entry.pixel_shader,
+    })
 }
 
 #[cfg(test)]

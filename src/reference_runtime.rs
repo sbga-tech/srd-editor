@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::animation::RuntimeAnimationState;
@@ -98,6 +99,33 @@ pub struct ReferenceRuntimePlan {
     pub unresolved: Vec<UnresolvedReference>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReferenceRuntimeAncestryError {
+    InvalidReferenceInstance { instance_index: usize },
+    ReferenceCycle { instance_index: usize },
+}
+
+impl fmt::Display for ReferenceRuntimeAncestryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidReferenceInstance { instance_index } => {
+                write!(
+                    formatter,
+                    "reference instance {instance_index} is outside the runtime plan"
+                )
+            }
+            Self::ReferenceCycle { instance_index } => {
+                write!(
+                    formatter,
+                    "reference instance ancestry cycles at {instance_index}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReferenceRuntimeAncestryError {}
+
 /// One non-reference CAST in the exact structural traversal produced by
 /// `srd_render_runtime_layer`: layer CAST vectors are visited forward, and a
 /// resolved RefCast recursively expands its copied layer at that NODE
@@ -113,6 +141,35 @@ pub struct RuntimeCastDrawOrderEntry {
 }
 
 impl ReferenceRuntimePlan {
+    /// Finds the original ProjectLayer whose RefCast expansion owns `owner`.
+    ///
+    /// A copied reference draw keeps its source layer identity for assets but
+    /// inherits visibility and layer controls from this root ProjectLayer.
+    pub fn root_project_layer(
+        &self,
+        mut owner: ReferenceLayerParent,
+    ) -> Result<ReferenceTarget, ReferenceRuntimeAncestryError> {
+        let mut visited_instances = BTreeSet::new();
+        loop {
+            match owner {
+                ReferenceLayerParent::ProjectLayer(target) => return Ok(target),
+                ReferenceLayerParent::ReferenceInstance(instance_index) => {
+                    if !visited_instances.insert(instance_index) {
+                        return Err(ReferenceRuntimeAncestryError::ReferenceCycle {
+                            instance_index,
+                        });
+                    }
+                    owner = self
+                        .instances
+                        .get(instance_index)
+                        .ok_or(ReferenceRuntimeAncestryError::InvalidReferenceInstance {
+                            instance_index,
+                        })?
+                        .parent;
+                }
+            }
+        }
+    }
     pub fn structural_cast_draw_order(
         &self,
         project: &Project,
@@ -893,7 +950,13 @@ impl ProjectRuntime {
         self.apply_animation_set_definition(project, textures, scene_index, animation_set, frame)
     }
 
-    fn apply_animation_set_definition(
+    /// Applies an arbitrary dense ANMS assignment to one scene's runtime state.
+    ///
+    /// Slot `n` controls layer `n`: it always overwrites that runtime layer's
+    /// enabled flag, and a non-empty animation name evaluates that layer's
+    /// animation at `frame`. Slots beyond the scene's layers are ignored. On a
+    /// freshly constructed runtime, layers beyond the assignment retain base state.
+    pub fn apply_animation_set_definition(
         &mut self,
         project: &Project,
         textures: &TextureList,
@@ -910,17 +973,11 @@ impl ProjectRuntime {
                     "SCN[{scene_index}] is outside the project runtime"
                 ))
             })?;
-        let slots = animation_set
-            .slots
-            .iter()
-            .take(layer_count)
-            .map(|slot| (slot.is_enabled(), slot.animation_name.clone()))
-            .collect::<Vec<_>>();
         let mut result = RuntimeAnimationTreeApplication::default();
 
-        for (layer_index, (enabled, animation_name)) in slots.into_iter().enumerate() {
-            self.project_layers[scene_index][layer_index].enabled = enabled;
-            if animation_name.is_empty() {
+        for (layer_index, slot) in animation_set.slots.iter().take(layer_count).enumerate() {
+            self.project_layers[scene_index][layer_index].enabled = slot.is_enabled();
+            if slot.animation_name.is_empty() {
                 continue;
             }
             if let Some(application) = self.apply_layer_animation(
@@ -930,7 +987,7 @@ impl ProjectRuntime {
                     scene_index,
                     layer_index,
                 },
-                &animation_name,
+                &slot.animation_name,
                 frame,
             )? {
                 result.include_tree(application);
@@ -1147,7 +1204,9 @@ mod tests {
     use crate::animation::{AnimationDefinition, Key8, KeyData, Motion, Track};
     use crate::attribute::{CastAttribute, CastAttributeList, CastAttributeValue, ExtParamData};
     use crate::reference::ReferenceDefinition;
-    use crate::scene::{Layer, NodeRecord, RawTransform, Scene};
+    use crate::scene::{
+        AnimationSetDefinition, Layer, NodeRecord, RawTransform, Scene, SceneAnimationSlot,
+    };
     use crate::transform::SpatialTransform;
 
     use super::*;
@@ -1209,6 +1268,144 @@ mod tests {
             }],
             fonts: Vec::new(),
         }
+    }
+
+    fn scratch_assignment(slots: Vec<SceneAnimationSlot>) -> AnimationSetDefinition {
+        AnimationSetDefinition {
+            name: b"scratch".to_vec(),
+            start_frame: 0,
+            runtime_duration: 10,
+            declared_slot_count: slots.len() as i32,
+            slots,
+        }
+    }
+
+    fn animation_layer(base_x: f32) -> Layer {
+        let mut result = layer(b"animated", true, vec![None]);
+        result.flags |= 0x100;
+        result.transforms[0] = RawTransform::Trs2(SpatialTransform {
+            translation: [base_x, 0.0, 0.0],
+            ..SpatialTransform::default()
+        });
+        result.animation_count = 1;
+        result.animations.push(AnimationDefinition {
+            name: b"move".to_vec(),
+            flags: 0,
+            declared_motion_count: 1,
+            duration: 10,
+            motions: vec![Motion {
+                target: 0,
+                tracks: vec![Track {
+                    target: 0,
+                    key_count: 1,
+                    format: 0x10,
+                    range_start: 0,
+                    range_end: 10,
+                    keys: KeyData::Key8F32(vec![Key8 {
+                        frame: 0,
+                        value: 25.0,
+                    }]),
+                }],
+            }],
+        });
+        result
+    }
+
+    #[test]
+    fn scratch_assignment_overwrites_dense_enablement_and_leaves_uncovered_layers_at_base_state() {
+        let mut first = layer(b"first", true, vec![None]);
+        first.flags |= 0x100;
+        let mut second = layer(b"second", true, vec![None]);
+        second.flags |= 0x100;
+        let mut third = layer(b"third", true, vec![None]);
+        third.flags |= 0x100;
+        let project = project(vec![first, second, third]);
+        let assignment = scratch_assignment(vec![
+            SceneAnimationSlot {
+                animation_name: Vec::new(),
+                enabled: 0,
+            },
+            SceneAnimationSlot {
+                animation_name: Vec::new(),
+                enabled: 1,
+            },
+        ]);
+        let textures = TextureList {
+            declared_count: 0,
+            textures: Vec::new(),
+        };
+        let mut runtime = ProjectRuntime::new(&project).unwrap();
+
+        runtime
+            .apply_animation_set_definition(&project, &textures, 0, &assignment, 0.0)
+            .unwrap();
+
+        assert!(project.scenes[0].animation_sets.is_empty());
+        assert_eq!(
+            runtime.project_layers[0]
+                .iter()
+                .map(|layer| layer.enabled)
+                .collect::<Vec<_>>(),
+            vec![false, true, true],
+        );
+        assert!(
+            !runtime
+                .compose_world_states(&project, Affine3x4::IDENTITY, Affine3x4::IDENTITY)
+                .unwrap()
+                .project_layers[0][0]
+                .layer
+                .render_gate
+        );
+    }
+
+    #[test]
+    fn enabled_empty_assignment_slot_keeps_the_layer_base_pose() {
+        let project = project(vec![animation_layer(7.0)]);
+        let assignment = scratch_assignment(vec![SceneAnimationSlot {
+            animation_name: Vec::new(),
+            enabled: 1,
+        }]);
+        let textures = TextureList {
+            declared_count: 0,
+            textures: Vec::new(),
+        };
+        let mut runtime = ProjectRuntime::new(&project).unwrap();
+
+        let application = runtime
+            .apply_animation_set_definition(&project, &textures, 0, &assignment, 4.0)
+            .unwrap();
+
+        assert_eq!(application, RuntimeAnimationTreeApplication::default());
+        assert!(runtime.project_layers[0][0].enabled);
+        assert_eq!(
+            runtime.project_layers[0][0].cast_transforms[0].translation[0],
+            7.0
+        );
+    }
+
+    #[test]
+    fn named_assignment_slot_applies_the_layer_animation() {
+        let project = project(vec![animation_layer(7.0)]);
+        let assignment = scratch_assignment(vec![SceneAnimationSlot {
+            animation_name: b"move".to_vec(),
+            enabled: 1,
+        }]);
+        let textures = TextureList {
+            declared_count: 0,
+            textures: Vec::new(),
+        };
+        let mut runtime = ProjectRuntime::new(&project).unwrap();
+
+        let application = runtime
+            .apply_animation_set_definition(&project, &textures, 0, &assignment, 4.0)
+            .unwrap();
+
+        assert_eq!(application.animated_layers, 1);
+        assert!(runtime.project_layers[0][0].enabled);
+        assert_eq!(
+            runtime.project_layers[0][0].cast_transforms[0].translation[0],
+            25.0
+        );
     }
 
     #[test]
@@ -1844,6 +2041,70 @@ mod tests {
         assert_eq!(
             runtime.layers[top_level_leaf].cast_transforms[0].translation[0],
             0.0
+        );
+    }
+    #[test]
+    fn root_project_layer_follows_nested_refcast_ancestry() {
+        let root = ReferenceTarget {
+            scene_index: 0,
+            layer_index: 4,
+        };
+        let plan = ReferenceRuntimePlan {
+            instances: vec![
+                ReferenceLayerInstance {
+                    parent: ReferenceLayerParent::ProjectLayer(root),
+                    reference_node_index: 2,
+                    target: ReferenceTarget {
+                        scene_index: 1,
+                        layer_index: 3,
+                    },
+                    is_2d: true,
+                    flip_y: false,
+                },
+                ReferenceLayerInstance {
+                    parent: ReferenceLayerParent::ReferenceInstance(0),
+                    reference_node_index: 5,
+                    target: ReferenceTarget {
+                        scene_index: 2,
+                        layer_index: 1,
+                    },
+                    is_2d: true,
+                    flip_y: false,
+                },
+            ],
+            unresolved: Vec::new(),
+        };
+
+        assert_eq!(
+            plan.root_project_layer(ReferenceLayerParent::ReferenceInstance(1)),
+            Ok(root)
+        );
+    }
+
+    #[test]
+    fn root_project_layer_rejects_invalid_or_cyclic_instances() {
+        let invalid = ReferenceRuntimePlan::default();
+        assert_eq!(
+            invalid.root_project_layer(ReferenceLayerParent::ReferenceInstance(0)),
+            Err(ReferenceRuntimeAncestryError::InvalidReferenceInstance { instance_index: 0 })
+        );
+
+        let cyclic = ReferenceRuntimePlan {
+            instances: vec![ReferenceLayerInstance {
+                parent: ReferenceLayerParent::ReferenceInstance(0),
+                reference_node_index: 0,
+                target: ReferenceTarget {
+                    scene_index: 0,
+                    layer_index: 0,
+                },
+                is_2d: true,
+                flip_y: false,
+            }],
+            unresolved: Vec::new(),
+        };
+        assert_eq!(
+            cyclic.root_project_layer(ReferenceLayerParent::ReferenceInstance(0)),
+            Err(ReferenceRuntimeAncestryError::ReferenceCycle { instance_index: 0 })
         );
     }
 }
