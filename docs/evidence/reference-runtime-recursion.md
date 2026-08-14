@@ -93,7 +93,7 @@ Rust 已实现：
 - copied layer 的父矩阵、乘色、加色、transform visibility 和 render gate 组合；
 - `ProjectRuntime::compose_world_states` 已把上述组合应用到每个顶层 project layer 和每个独立 copied layer 的完整 CAST hierarchy：顶层从宿主 `FirstCalcMatrix` 起算，copied layer 从 owning RefCast 世界状态起算；CAST 的 `0x200/0x400/0x80000` 继承位、独立 runtime 2D/3D 模式和只发生一次的 copied-layer Y 翻转均进入结果，transform visibility 与 render gate 分栏保存；
 - 独立 ImageCast draw builder 已按 `structural_cast_draw_order` 逐 CAST 消费上述 owner/source/world/runtime SrImage 状态；测试覆盖“原始目标层 disabled、copied layer 由 RefCast 独立 enabled”时只生成 copied instance draw，并验证父 RefCast 与目标 CAST 平移进入最终顶点；
-- copied TextCast/Fennel builder 使用相同 owner/source/world/runtime SrImage 输入，并以 `(ReferenceLayerParent, NODE)` 区分每个实例的 substitution/default/repeat/F4；专项用同一目标层的两个独立实例分别把 `$[0]` 解析为不同 glyph/atlas token。`EvidenceCompleteRuntimeCastDraw` 已在一次结构遍历中按 `Image -> RefCast 内联 Fennel -> Image -> ...` 生成混合 CAST 调用序列，但明确不把它冒充后续 target queue 的最终 GPU 顺序；
+- copied TextCast/Fennel builder 使用相同 owner/source/world/runtime SrImage 输入，并以 `(ReferenceLayerParent, NODE)` 区分每个实例的 substitution/default/repeat/F4；专项用同一目标层的两个独立实例分别把 `$[0]` 解析为不同 glyph/atlas token。`RuntimeCastDraw` 已在一次结构遍历中按 `Image -> RefCast 内联 Fennel -> Image -> ...` 生成混合 CAST 调用序列，但明确不把它冒充后续 target queue 的最终 GPU 顺序；
 - 每个顶层项目层及 copied layer 独立的 CAST transform、内嵌 SrImage 与 ANIM frame/duration/flags；
 - 公共动画 pass 后的完整 SrImage 专用 pass：`11/12`、`13..16`、`17/20`；
 - 通道 `23` 从顶层项目层或 copied layer 定位正确子实例，首次匹配具名动画、保存 raw frame，并递归执行公共与专用 pass；

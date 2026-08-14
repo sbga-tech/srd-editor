@@ -20,14 +20,14 @@ pub struct TextureCrop {
     pub normalized_rectangle: [f32; 4],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum TextureAddressMode {
     Wrap = 1,
     Clamp = 3,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum TextureFilter {
     Point = 1,

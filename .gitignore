@@ -8,3 +8,7 @@
 .idea/
 .vscode/
 *.log
+
+diagnostics/d3d9-runtime-hook/out*/
+diagnostics/d3d9-runtime-hook/loader_probe.cpp
+diagnostics/d3d9-runtime-hook/loader-probe.exe

@@ -13,13 +13,13 @@
 
 `tea_cg_create_program` 以 `CG_SOURCE (0x1010)`、entry `main`、compiler args null 调用 `cgCreateProgram`。离线输出头进一步独立显示 Cg `3.1.0013`、`-q -no_uniform_blocks -profile vs_3_0/ps_3_0 -entry main`，与二进制参数闭环一致。
 
-## 隔离取证工具
+## 历史隔离取证流程
 
-[`tools/cg_shader_probe`](../../tools/cg_shader_probe/README.md) 是独立 x86 工具，不属于编辑器 runtime。它执行：
+现已删除的独立 x86 probe 曾执行：
 
-1. 解析 PE section table，把已经证明的 embedded source VA 转成 raw file offset；
-2. 用 `encoded XOR hash XOR 0x59634649` 解出 13 个 Simple source/include；
-3. 复用 Rust 的 18 字节键 decoder 和完整 define 表；
+1. 扫描 PE32 code 中的 shader-manager 注册调用形态，按共享 call target 自动恢复 resource records；
+2. 直接从每条 record 读取文件名、长度、encoded VA 与 hash，再按 `encoded XOR hash XOR 0x59634649` 解码；已知 MATE 2.50 executable 自动发现并导出全部 138 个 Cg source/include；
+3. compile 子命令复用 Rust 的 18 字节键 decoder 和完整 define 表；
 4. 递归展开 include，并消除与游戏 include guard 等价的重复 include；
 5. 动态加载游戏 `cg.dll`，用上述精确参数取得 D3D assembly；
 6. 动态加载系统 `d3dcompiler_47.dll` 并调用 `D3DAssemble`；
@@ -27,7 +27,7 @@
 8. 对每份 bytecode 调用 `CreateVertexShader` 或 `CreatePixelShader`，成功后立即释放对象；
 9. 写出 `.cg/.asm/.bin` 与含精确 HRESULT 的 `manifest.tsv`。
 
-工具的 PE import table 没有 Cg、D3DCompiler 或 D3DX 静态依赖，所有取证 DLL 都显式动态加载；import table 对 `D3DX` 的匹配数为零。源码中没有 D3DX 调用。
+该工具的 PE import table 没有 Cg、D3DCompiler 或 D3DX 静态依赖，所有取证 DLL 都显式动态加载；import table 对 `D3DX` 的匹配数为零，源码中也没有 D3DX 调用。工具与其生成物在原生 renderer 完成行为对照后一起删除，本页保留其可审计结果。
 
 ## 完整 Simple collection 结果
 
@@ -40,7 +40,9 @@
 
 所有 VS bytecode 首 token 为 `0xFFFE0300` (`vs_3_0`)，所有 PS 首 token 为 `0xFFFF0300` (`ps_3_0`)，全部以 `0x0000FFFF` 结束。82 个键因部分 feature 只影响单一 stage，最终折叠为 14 个不同 VS bytecode hash 和 24 个不同 PS bytecode hash。
 
-完整 82-key collection 现已由 `tools/package_simple_shaders.rs` 从上述 `manifest.tsv` 和 `.bin` 机械生成 `src/shader_bytecode_generated.rs`。生成器要求 82 个 key 的 VS/PS 两行都存在、每行 HAL 结果均为 `ok`、每份 bytecode 均 DWORD 对齐；然后按字节去重为同样的 14 个 VS blob 和 24 个 PS blob，并保留全部 82 个精确 key 到 pair 的映射。Fennel format-13 的两个已证 3D/2D key 继续复用其逐字节相同的 collection shader pair，所以编辑器总共注册 84 个精确 key。运行时不调用 Cg、D3DCompiler 或 D3DX，也不为未注册 key 猜测替代品。
+这套离线流程曾将完整 collection 去重为 14 个 VS 与 24 个 PS，并以 vkd3d-shader 2.0 生成 stripped SPIR-V，再由 Naga 验证 WebGPU 翻译。它证明了 shader 公式、vertex interface 与 82-key collection 的行为，不再是编辑器 build 输入。
+
+当前编辑器已删除 SM3/SPIR-V asset、key-to-stage lookup、build-time translator 与 D3D9 runtime。运行时直接构造语义化 `SrdDrawState`，并使用 `src/renderer/wgpu/shaders/simple.wgsl` 这一份 canonical module；其两个 vertex declaration entrypoint 分别接收 format 14 与 format 13，随后共享同一 fragment program，profile feature 在 pipeline 创建时固化为 overrides。因此正常 Cargo build 不读取本页离线产物。
 
 三维无贴图 sibling `AAEBABBAAAGAAAAAAA` 的 VS 为 332 bytes、SHA-256 `86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61`；PS 为 216 bytes、SHA-256 `B7D50CF8DAC3A981DB13F2B5C3C7CAF8935FC4392B385B516620F7584EC2E53F`。
 
@@ -87,4 +89,4 @@ collection 中唯一的 MultiTex0 mode 9 键 `AAEBABBAADIIEAAAAA` 得到：
 
 已经证明：原版 Cg profile/参数、完整 collection 的 canonical assembly、无需 D3DX 的确定性 D3D9 bytecode 生成、bytecode profile/end token，以及全部 164 份 bytecode 的 D3D9 HAL shader 对象创建。
 
-仍需完成：把 runtime ShapeEnv context 精确映射到每次实际 draw 的 compact key，并逐项接入尚未闭合的外部 scene/pass context、常量与多纹理 draw。发布包方案已经确定为嵌入经验证的完整 key->bytecode 表；离线 x86 Cg 工具不会成为发布依赖。
+范围边界：自动 extractor 覆盖该 executable 内发现的全部 138 个 Cg source/include；checked runtime asset pipeline 目前只消费编辑器实际选择的 82-key Simple collection（外加两个 byte-identical Fennel aliases）。其余 Cg shader family 已可提取，但尚未成为 SRD renderer 的 runtime contract。

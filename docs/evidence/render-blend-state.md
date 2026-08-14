@@ -102,6 +102,13 @@ derived-state refresh 使用 packet 低六位作为无符号 ID，62/63 被钳�
 
 Rust 保存全部 62 个表项，而不仅是样本当前使用的几个 ID。表内相同记录仍保留为不同索引：0/20/22..60 相同，1/21 相同，3/61 相同，5/15、6/16、7/17、9/19 分别相同。12、13、14 的 separate-alpha 字段也完整保存，未因 SRD 默认路径暂时不用而丢弃。
 
+## 非独立 alpha blend 的有效状态
+
+D3D9 在 `SEPARATEALPHABLENDENABLE = FALSE` 时忽略 `SRCBLENDALPHA/DESTBLENDALPHA/BLENDOPALPHA`，并把 color 的 factor/op 同时用于 render-target alpha。WebGPU 的 blend descriptor 始终分别声明 color 与 alpha，所以不能照抄此时无效的 alpha 三字段；必须把有效 color equation 复制到 alpha component。预设 `12..14` 明确启用 separate alpha，继续使用各自记录；其余预设均采用 color equation，包括预设 `10` 的 `ONE/ZERO` 与 Fennel 的 `SRCALPHA/INVSRCALPHA`。
+
+远端 warning capture `srd-renderer-20260815T002319475Z.trace` 的 calls `21826..21840` 设置 `SEPARATEALPHABLENDENABLE = FALSE`，color 为 `SRCALPHA/INVSRCALPHA`，同时出现的 `DESTBLENDALPHA = ZERO` 因 separate alpha 关闭而不参与结果。stride-28 Fennel 顶点、字体 atlas 与 pixel shader `0x33582868` 随后一次提交 512 个 triangle；捕获 shader 的公式精确为 `atlas * primary + secondary.rgb`。因此透明 atlas texel 应保留已有 composition alpha，而不是以旧 WebGPU `ZERO/ZERO` component 把整个 glyph quad 写成 alpha 0。`diagnostics/parity/native/warning-f30.png` 与 `diagnostics/parity/analysis/warning-wgpu-rgb.png` 分别证明原生字形轮廓和旧输出 RGB 本身均正确；GPU 回归 `transparent_fennel_atlas_preserves_composition_alpha` 固定透明 texel 保持背景 alpha `255`。
+
+
 SRD 直接选择的六个预设最终状态为：
 
 | ID | Alpha blend | Src | Dst | Op | Alpha test |
@@ -127,6 +134,24 @@ SRD 直接选择的六个预设最终状态为：
 
 语料仍没有触发特殊 renderer 模式的 20/21 分支；这两条路径由二进制控制流、常量和字段写入完整证明，不能因当前语料未覆盖而删除。
 
+## 原生 target-color material
+
+`SimpleShaderPS.cg` 的 `EXSSF_PS_BLEND` 分支与 `PhotoShopLayerBlendPS.h` 闭环了动态 preset 的 target-color 消费。原生 WGSL 先完成 texture combine、primary color 乘法与 secondary RGB 加法，再执行下表并对最终 alpha 应用 alpha-test：
+
+| preset | 输出 |
+|---:|---|
+| `33..55` | `mix(targetColor, photoshopBlend(targetColor, source, preset), source.a)`，对 RGBA 四分量插值 |
+| `56` | `clamp(targetColor + source * source.a, 0, 1)`；SRD 路径的 `fixedParam0.z` 为已证明的 `1.0` |
+| `57` | 9×9 Gaussian；半径 `0.5 * source.a` |
+| `58` | 9×9 Gaussian；半径 `source.a` |
+| `59` | 18×18 super-Gaussian；offset 为 `(i - 8) * source.a`，duplicated 9-tap weights，最终除以 4 |
+| `60` | `64 * (source.rg - 0.5) / targetSize * source.a` 的 RG displacement |
+| `61` | `vec4(1, 1, 1, source.a)` |
+
+`33..60` 使用表项 0 的固定状态，因此关闭 hardware alpha blend；`61` 使用表项 3 的普通 source-alpha blend。WebGPU 不能同时采样并写入同一 attachment，所以 backend 在每个 `33..60` draw 前结束当前 render pass，把当时的 RGBA color attachment 复制到独立 `textureTargetColor`，再以 `Load` 恢复原 color/depth-stencil attachment。相邻动态 draw 因而各自看到前一个 draw 已提交后的内容，而不是 frame-start 或 batch-start 快照。
+
+硬件回归 `recovered_material_formulas_execute_on_gpu` 对 13 个 multi-texture mode 与 `33..56` 的全部公式运行 compute oracle；`dynamic_surface_draws_sample_the_ordered_backdrop` 固定首个/连续 target-color draw 的 clear 与次序；`target_color_effect_modes_execute_on_gpu` 以阶跃图验证 `57..59` 半径及 source-alpha 缩放、`60` displacement 与 `61` 固定 blend。语料门控的 `renders_complete_dynamic_shader_fixture` 保留 `chu_ui_shader_extparam_00_v12.srd` 编译出的 54 组真实 material/texture 状态，以确定性 gallery transform 提交，并覆盖 `34..58`。
+
 ## 当前证据边界
 
-本页闭环的是预设选择、packet ID 编码、62 项 blend/alpha-enable 表以及最终 D3D9 blend render states。后续已经闭环的 alpha/depth/stencil packet 与 backend 状态见 [`render-alpha-depth-stencil.md`](render-alpha-depth-stencil.md)，scissor 链见 [`render-scissor-state.md`](render-scissor-state.md)；shader 和双 UV 的像素阶段消费仍需各自调用链证明。这里没有把它们并入混合预设或赋予推测值。
+本页已闭环预设选择、packet ID 编码、62 项 blend/alpha-enable 表、最终 D3D9 blend state，以及 `33..61` 的 target-color 公式和有序 attachment snapshot。仍未闭环的是 preset `22..32` 与未知 scene/pass provider；它们继续返回明确错误。alpha/depth/stencil packet 与 backend 状态见 [`render-alpha-depth-stencil.md`](render-alpha-depth-stencil.md)，scissor 链见 [`render-scissor-state.md`](render-scissor-state.md)。

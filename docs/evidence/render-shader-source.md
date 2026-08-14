@@ -46,7 +46,7 @@ copy source body immediately after it
 decoded_dword = encoded_dword XOR resource_hash XOR 0x59634649
 ```
 
-循环步长严格为 4；全部已注册记录的 byte count 都是 4 的倍数。Rust 的 `decode_embedded_shader_source` 保存该变换，对非整 dword 输入显式报错。
+循环步长严格为 4；全部已注册记录的 byte count 都是 4 的倍数。已删除的隔离证据工具曾保存该变换，并对非整 dword 输入显式报错。
 
 Simple 主 source 与专属 include 的记录为：
 
@@ -63,6 +63,8 @@ Simple 主 source 与专属 include 的记录为：
 
 解码后的 VS/PS 均为可读 Cg，入口名均为 `main`，尾部由 NUL 对齐。`sea_load_and_expand_shader_source` (`0x6BF4C0`) 优先从 manager 文件表读取，失败才尝试外部文件，并递归展开 `#include`。Simple 闭包还精确包含 `DefaultColorCompress.h`、`DefaultShadow.h`、`FixedPSUniform.h`、`FixedVSUniform.h` 和 `ParticleSystem.h`。source 来源、字节、include 依赖与预处理入口均已闭环。
 
+历史 extractor 不内置上表中的 hash/VA：它扫描该 PE32 的注册 call shape，读取 record 参数并按共享 call target 归组。对上述 executable 的实际 smoke 自动恢复 138 条唯一记录，输出的 `sources.tsv` 与二进制注册表一致；工具与输出现已删除，上表保留为 Simple include closure 的可读取证样本。
+
 ## SRD 双 UV 与双顶点色公式
 
 `SimpleShaderDefine.h` 的输入与 format 14 一致：POSITION、COLOR0、COLOR1、TEXCOORD0、TEXCOORD1。`SimpleShaderVS.cg` 在 `SSF_VERTEX_TEXCOORD == 2` 时把 TEXCOORD0 写到 `_texCoord01.xy`，把 TEXCOORD1 写到 `_texCoord01.zw`，并在启用 MultiTex1 时写到 `_texCoord23.xy`。
@@ -75,7 +77,14 @@ Simple 主 source 与专属 include 的记录为：
 4. `SSF_VERTEX_COLOR`：结果乘 COLOR0；值大于 1 时再把 COLOR1.rgb 加到结果 rgb；
 5. 随后才执行 blend-mode 特殊分支、深度/soft-edge/shadow/refraction/fog 与 `calcCompressColor`。
 
-`DefaultColorCompress.h` 证明 `multiTexBlned` 的 SRD 相关 mode：`9` 用 source 覆盖 rgb，并写 `src.a + dest.a * 0.00001`；`10` 用 source alpha 在 dest/src rgb 间插值；`11` 把 source.r 写入 dest alpha；`12` 用 source.r 乘 dest alpha。完整 data 的 Simple collection 实际包含 MultiTex0 mode `9/10/11/12`，使键值、宏值和像素公式形成独立交叉校验。
+`DefaultColorCompress.h` 证明 `multiTexBlned` 的完整 mode `0..12` 公式：`0/1/8` 保留 dest，`2` 返回 src，`3` 以 `src.a` 对完整 dest/src 插值，`4/5` 分别对完整 RGBA 加、减；`6` 只将 rgb 相乘，并写 `src.a + dest.a * 0.00001`；`7` 为 `1-dest`；`9` 用 src 覆盖 rgb，并写相同的 epsilon alpha 公式；`10` 只用 src alpha 在 dest/src rgb 间插值；`11` 把 src.r 写入 dest alpha；`12` 用 src.r 乘 dest alpha。当前原生 WGSL 的硬件回归逐 mode 执行这些公式，不再只验证语法或单一无纹理 draw。
+
+## 实机 preset 4 遮罩验证
+
+`CHU_UI_Advertise_00_v10.srd` 的 `C_mask_CHUNITHM`、`C_Mate_mask_typeA_01`、`C_mask_M/a/t/e` 与 `C_ilm_logo_jpn` 均保存 CIMG `0x4C = 4`，并各自绑定 base 与 secondary 两张纹理。运行时把 CIMG/CNUM 的原始值 `1..4` 连续映射为 Surfride mode `9..12`；因此这些节点必须选择 mode `12`，而不是 mode `0`。原始值 `1/2/3/4` 的 Rust 映射和 shader 常量现分别为 `ReplaceWithSecondary(9)`、`BlendWithSecondaryAlpha(10)`、`SecondaryRedToAlpha(11)`、`MultiplyAlphaBySecondaryRed(12)`。
+
+远端实机 capture `srd-renderer-20260814T235050494Z.trace` 的 calls `41869..41893` 在同一 mask draw 上绑定两个 texture stage，并使用 pixel shader `0x2f6273f0`。该 shader 的捕获反汇编先分别采样 `s0/s1`，随后执行 `mul r0.w, r0, r1.x`，再进入 vertex-color 乘法；这与 `DefaultColorCompress.h` 的 mode `12`（`dest.a *= src.r`）逐指令一致。call `41883 -> 41893` 的 framebuffer delta 只覆盖 M/a/t/e 字形轮廓，保存在 `diagnostics/parity/analysis/title-native-mask-contributions.png`；不存在覆盖整个轴对齐 quad 的原生结果。WebGPU 的 `raw_image_field_four_multiplies_base_alpha_by_secondary_red_on_gpu` 以不透明 base 与 50% secondary red 回读约 50% red，固定这条 GPU contract。
+
 
 ## Vertex/pixel 阶段与原游戏编译链
 
@@ -90,4 +99,4 @@ Simple 主 source 与专属 include 的记录为：
 
 已经闭环：selector、前缀格式与拼接、嵌入 source 解码、全部 Simple include、双 UV/双顶点色消费顺序、MultiTex 公式、Cg 到 D3D assembly 的原游戏链，以及最终 D3D9 stage 创建。
 
-仍需闭环：64 位 ShapeEnv key 之外的其余 scene/pass context 输入如何生成每次实际使用的完整 18 字节 Simple 键。完整 bytecode 已由独立 D3D9 HAL device 实际创建，并已封装进编辑器 runtime key 表，见 [`render-shader-bytecode.md`](render-shader-bytecode.md)。
+仍需闭环：64 位 ShapeEnv key 之外的其余 scene/pass context 输入如何生成每次实际使用的完整 18 字节 Simple 键，以及未证明的 render preset `22..32`。完整 bytecode 已由独立 D3D9 HAL device 实际创建；当前编辑器把资源拓扑完整的固定路径与动态 preset `33..61` 编译为原生 shader/material/pipeline state。动态路径逐 draw 复制当前 color attachment，复现 `EXSSF_PS_BLEND` 的 target-color 公式；未知 provider 组合仍返回明确错误，见 [`render-blend-state.md`](render-blend-state.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。

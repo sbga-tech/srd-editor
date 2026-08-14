@@ -1,11 +1,10 @@
 mod backend;
-mod shaders;
 mod texture;
 
 use backend::WgpuSrdRenderBackend;
 
 use crate::renderer::backend::{FennelAtlasHandle, SrdTextureSetHandle};
-use crate::renderer::gpu_preview::{GpuPreviewState, ManagedSrdRenderBackend};
+use crate::renderer::preview::{GpuPreviewState, ManagedSrdRenderBackend};
 use crate::renderer::{PreviewFrame, PreviewRenderer, PreviewRequest};
 
 pub(super) struct WgpuPreviewRenderer {
@@ -29,9 +28,12 @@ impl PreviewRenderer for WgpuPreviewRenderer {
     fn name(&self) -> &str {
         &self.name
     }
+    fn is_reference_accurate(&self) -> bool {
+        false
+    }
 
     fn omissions(&self) -> &str {
-        "Legacy .sbfont text is omitted; an arbitrary SRD does not itself prove its host target profile"
+        "Render presets 22..32, unresolved scene/pass providers, and legacy .sbfont text remain unsupported"
     }
 
     fn render(&mut self, request: PreviewRequest<'_>) -> Result<PreviewFrame, String> {
@@ -58,6 +60,17 @@ mod tests {
     use crate::document::EditorDocument;
     use crate::renderer::{PreviewLayerRequest, PreviewProfile};
 
+    #[derive(Clone, Copy)]
+    struct CorpusCase {
+        label: &'static str,
+        relative_path: &'static str,
+        profile: PreviewProfile,
+        animation_set_index: usize,
+        frame: i32,
+        expect_visible: bool,
+        expect_non_white_detail: bool,
+    }
+
     #[test]
     fn renders_representative_game_corpus_profiles() {
         std::thread::Builder::new()
@@ -69,99 +82,104 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn renders_advertise_dual_texture_fixture() {
+        let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+            eprintln!("skipping: GAME_DATA_CORPUS is not set");
+            return;
+        };
+        let mut renderer = WgpuPreviewRenderer::try_new().unwrap();
+        render_corpus_case(
+            &mut renderer,
+            &root,
+            CorpusCase {
+                label: "advertise-dual-texture",
+                relative_path: "surfboard/advertise/CHU_UI_Advertise_00_v10.srd",
+                profile: PreviewProfile::AdvertiseLogoMain,
+                animation_set_index: 10,
+                frame: 30,
+                expect_visible: true,
+                expect_non_white_detail: true,
+            },
+            0,
+        );
+    }
+
     fn renders_representative_game_corpus_profiles_on_large_stack() {
         let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
             eprintln!("skipping: GAME_DATA_CORPUS is not set");
             return;
         };
         let cases = [
-            (
-                "common-yellow-loop",
-                "surfboard/common/commonBackGround/CHU_UI_Common_BK_00_v11.srd",
-                PreviewProfile::CommonBackgroundMain,
-                0,
-                0,
-                true,
-                false,
-            ),
-            (
-                "common-alpha-test",
-                "surfboard/common/commonBackGround/CHU_UI_Common_BK_00_v11.srd",
-                PreviewProfile::CommonBackgroundMain,
-                1,
-                1,
-                true,
-                false,
-            ),
-            (
-                "advertise-fennel",
-                "surfboard/advertise/CHU_UI_Advertise_00_v10.srd",
-                PreviewProfile::AdvertiseLogoMain,
-                0,
-                24,
-                true,
-                false,
-            ),
-            (
-                "advertise-dual-texture",
-                "surfboard/advertise/CHU_UI_Advertise_00_v10.srd",
-                PreviewProfile::AdvertiseLogoMain,
-                10,
-                30,
-                true,
-                true,
-            ),
-            (
-                "linked-verse",
-                "surfboard/play/linkedVerse/CHU_UI_LinkedVERSE_Gate_00.srd",
-                PreviewProfile::LinkedVerseGateMain,
-                0,
-                0,
-                true,
-                false,
-            ),
+            CorpusCase {
+                label: "common-yellow-loop",
+                relative_path: "surfboard/common/commonBackGround/CHU_UI_Common_BK_00_v11.srd",
+                profile: PreviewProfile::CommonBackgroundMain,
+                animation_set_index: 0,
+                frame: 0,
+                expect_visible: true,
+                expect_non_white_detail: false,
+            },
+            CorpusCase {
+                label: "common-alpha-test",
+                relative_path: "surfboard/common/commonBackGround/CHU_UI_Common_BK_00_v11.srd",
+                profile: PreviewProfile::CommonBackgroundMain,
+                animation_set_index: 1,
+                frame: 1,
+                expect_visible: true,
+                expect_non_white_detail: false,
+            },
+            CorpusCase {
+                label: "advertise-fennel",
+                relative_path: "surfboard/advertise/CHU_UI_Advertise_00_v10.srd",
+                profile: PreviewProfile::AdvertiseLogoMain,
+                animation_set_index: 0,
+                frame: 24,
+                expect_visible: true,
+                expect_non_white_detail: false,
+            },
+            CorpusCase {
+                label: "advertise-dual-texture",
+                relative_path: "surfboard/advertise/CHU_UI_Advertise_00_v10.srd",
+                profile: PreviewProfile::AdvertiseLogoMain,
+                animation_set_index: 10,
+                frame: 30,
+                expect_visible: true,
+                expect_non_white_detail: true,
+            },
+            CorpusCase {
+                label: "linked-verse",
+                relative_path: "surfboard/play/linkedVerse/CHU_UI_LinkedVERSE_Gate_00.srd",
+                profile: PreviewProfile::LinkedVerseGateMain,
+                animation_set_index: 0,
+                frame: 0,
+                // The documented MainScene runtime-camera write remains unresolved for this 3D fixture.
+                expect_visible: false,
+                expect_non_white_detail: false,
+            },
         ];
         let mut renderer = WgpuPreviewRenderer::try_new().unwrap();
-        for (
-            revision,
-            (
-                label,
-                relative,
-                profile,
-                animation_set_index,
-                frame,
-                expect_visible,
-                expect_non_white_detail,
-            ),
-        ) in cases.into_iter().enumerate()
-        {
-            render_corpus_case(
-                &mut renderer,
-                &root.join(relative),
-                profile,
-                animation_set_index,
-                frame,
-                revision as u64,
-                label,
-                expect_visible,
-                expect_non_white_detail,
-            );
+        for (revision, case) in cases.into_iter().enumerate() {
+            render_corpus_case(&mut renderer, &root, case, revision as u64);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_corpus_case(
         renderer: &mut WgpuPreviewRenderer,
-        path: &Path,
-        profile: PreviewProfile,
-        animation_set_index: usize,
-        frame: i32,
+        root: &Path,
+        case: CorpusCase,
         revision: u64,
-        label: &str,
-        expect_visible: bool,
-        expect_non_white_detail: bool,
     ) {
-        let document = EditorDocument::load(path).unwrap();
+        let CorpusCase {
+            label,
+            relative_path,
+            profile,
+            animation_set_index,
+            frame,
+            expect_visible,
+            expect_non_white_detail,
+        } = case;
+        let document = EditorDocument::load(root.join(relative_path)).unwrap();
         let hidden_layers = BTreeSet::new();
         let hidden_casts = BTreeSet::new();
         let solo_casts = BTreeSet::new();
@@ -192,7 +210,7 @@ mod tests {
                 highlights: &[],
             })
             .unwrap_or_else(|error| panic!("{label} WebGPU render failed: {error}"));
-        let clear = [0x06, 0x0B, 0x17];
+        let clear = [0x00, 0x00, 0x00];
         let changed = frame
             .rgba
             .chunks_exact(4)

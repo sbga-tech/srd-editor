@@ -439,7 +439,7 @@ NODE[1] runtime cast
 ```
 
 The runtime addresses are heap-dependent; only the field offsets and ordering
-are fixed for this executable. The fixture's first evidence-complete draw is
+are fixed for this executable. The fixture's first fully materialized draw is
 layer index `0`, node index `1`, matching `C_fill`. This example demonstrates
 all three pointer classes at once: borrowed parsed records, flat owning runtime
 vectors, and non-owning hierarchy links.

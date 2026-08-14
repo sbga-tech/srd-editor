@@ -6,6 +6,7 @@ use iced::widget::image::FilterMethod;
 use iced::widget::pane_grid;
 use iced::widget::{
     Space, button, center, column, container, image, mouse_area, pin, row, scrollable, stack, text,
+    tooltip,
 };
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Point, Rectangle, Size, Theme};
 use lucide_icons::Icon;
@@ -21,8 +22,8 @@ use super::components::{
     layer_tree_row_style, mini_icon_button, nonempty_name, notice_style, panel, panel_body,
     panel_header, panel_section, panel_toolbar, panel_with_toolbar, parse_or, passive_icon,
     property_row, resizable_panes, section_header_button_style, section_heading, section_surface,
-    sub_bar_style, surface_style, timecode, toggle as toggle_component, top_bar_style,
-    tree_controls_style, tree_row_style,
+    sub_bar_style, surface_style, timecode, toggle as toggle_component, tooltip_style,
+    top_bar_style, tree_controls_style, tree_row_style,
 };
 use super::model::{
     CanvasTransformEdit, CastRoleDraft, EditorAction, ImageBindingDraft, InspectorField,
@@ -33,7 +34,7 @@ use super::{
     PreviewCastSelection,
 };
 use crate::document::display_srd_name;
-use crate::render::select_srd_image_render_preset;
+use crate::renderer::select_srd_image_render_preset;
 use crate::scene::{CastClassification, Hierarchy, Layer, NodeRecord, SrCastKind};
 
 pub fn view(editor: &Editor) -> Element<'_, Message> {
@@ -1260,6 +1261,50 @@ fn composition_panel(editor: &Editor) -> Element<'_, Message> {
     .padding([5, 8])
     .style(floating_badge_style);
 
+    let backend_name = editor.preview.backend_name();
+    let reference_accurate = editor.preview.is_reference_accurate();
+    let (backend_status, backend_color, backend_icon) = if backend_name == "GPU preview unavailable"
+    {
+        (backend_name, RED, Icon::AlertTriangle)
+    } else if reference_accurate {
+        ("Reference-accurate preview", CYAN, Icon::MonitorPlay)
+    } else {
+        ("Partial native preview", YELLOW, Icon::AlertTriangle)
+    };
+    let backend_badge: Element<'_, Message> = tooltip(
+        container(
+            row![
+                icon(backend_icon, 13, backend_color),
+                text(backend_status)
+                    .size(BODY_SIZE)
+                    .color(if reference_accurate {
+                        TEXT
+                    } else {
+                        backend_color
+                    }),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .padding([5, 8])
+        .style(floating_badge_style),
+        container(
+            column![
+                text(backend_name).size(BODY_SIZE).color(TEXT),
+                text(editor.preview.omissions())
+                    .size(CAPTION_SIZE)
+                    .color(MUTED),
+            ]
+            .spacing(3),
+        )
+        .width(Length::Fixed(420.0))
+        .padding([6, 8])
+        .style(tooltip_style),
+        tooltip::Position::Top,
+    )
+    .gap(7)
+    .into();
+
     let preview_badge: Element<'_, Message> = model
         .animate()
         .preview()
@@ -1294,7 +1339,14 @@ fn composition_panel(editor: &Editor) -> Element<'_, Message> {
         container(column![
             row![preview_badge, Space::new().width(Fill)].padding(12),
             Space::new().height(Fill),
-            row![selection_badge, Space::new().width(Fill), target_badge].padding(12),
+            row![
+                selection_badge,
+                Space::new().width(Fill),
+                backend_badge,
+                target_badge
+            ]
+            .spacing(6)
+            .padding(12),
         ])
         .width(Fill)
         .height(Fill),

@@ -52,7 +52,7 @@ out = cvtt_i32((left_unit * (1-t) + right_unit * t)
                * f32::from_bits(0x437F0000))
 ```
 
-Rust 的 `ScalarValue::Bytes4` 保留 KEY 解析后的四字节顺序，并由 `apply_vertex_color_track` 写入上述顶点。53 个样本在 CIMG/CNUM 上的 key 和相邻中点共完成 19424 次顶点色求值。
+Rust 的 `ScalarValue::Bytes4` 保留 KEY 解析后的四字节顺序；游戏把求值结果原样写成 D3DCOLOR 的 little-endian `B,G,R,A` 字节，而 WebGPU 顶点使用语义 `R,G,B,A`，所以 `apply_vertex_color_track` 在写入 backend-neutral `ImageCoordinateState` 时执行 `[2,1,0,3]` 转换。53 个样本在 CIMG/CNUM 上的 key 和相邻中点共完成 19424 次顶点色求值。
 
 ## 标量轨道
 

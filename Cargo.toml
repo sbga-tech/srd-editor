@@ -5,23 +5,11 @@ edition = "2024"
 publish = false
 default-run = "srd-editor"
 
-[features]
-default = ["dxvk-native"]
-dxvk-native = []
-
 [dependencies]
 iced = { version = "0.14.0", default-features = false, features = ["canvas", "image", "tokio", "wayland", "wgpu", "x11"] }
 image_dds = { version = "0.7.2", default-features = false }
-libloading = "0.8.9"
 lucide-icons = { version = "1.28.0", features = ["iced"] }
 png = "0.18.0"
 pollster = "0.4.0"
 rfd = { version = "0.16.0", default-features = false, features = ["xdg-portal", "tokio"] }
 wgpu = "27.0.1"
-
-[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
-windows-core = "0.62.2"
-windows-link = "0.2.1"
-
-[build-dependencies]
-windows-bindgen = "=0.66.0"

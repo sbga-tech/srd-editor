@@ -1,7 +1,5 @@
 use std::fmt;
 
-use crate::render::CeylonDrawPacketPresetState;
-
 /// The target renderer walks exactly 32 EntryInfo records when it flushes a
 /// scene model module.
 pub const SCENE_TARGET_ENTRY_COUNT: usize = 32;
@@ -15,22 +13,22 @@ pub const SRD_COMMAND_PACKET_84_LOW: u8 = 0x11;
 /// target's 32-entry `EntryInfo` table, while classification uses the compact
 /// active-rule index produced after disabled entries are skipped.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EvidenceBasePassProfile {
+pub struct BasePassProfile {
     pub name: &'static str,
     pub pass_index: u32,
     pub entry: bool,
-    pub rule: EvidenceScenePassRule,
+    pub rule: ScenePassRule,
 }
 
 /// Five `sea::PassBasic` instances installed by the common `air::Scene`
 /// constructor at `sub_6CF9A0`. Chusan's MainScene and BgScene both use this
 /// constructor and do not replace these values in their concrete setup path.
-pub const EVIDENCE_AIR_SCENE_BASE_PASSES: [EvidenceBasePassProfile; 5] = [
-    EvidenceBasePassProfile {
+pub const AIR_SCENE_BASE_PASSES: [BasePassProfile; 5] = [
+    BasePassProfile {
         name: "Back2DPass",
         pass_index: 4,
         entry: true,
-        rule: EvidenceScenePassRule {
+        rule: ScenePassRule {
             class_selector: 3,
             attribute_group: 0,
             condition_mode: 4,
@@ -39,11 +37,11 @@ pub const EVIDENCE_AIR_SCENE_BASE_PASSES: [EvidenceBasePassProfile; 5] = [
             order_threshold: 8_388_608,
         },
     },
-    EvidenceBasePassProfile {
+    BasePassProfile {
         name: "OpaquePass",
         pass_index: 8,
         entry: true,
-        rule: EvidenceScenePassRule {
+        rule: ScenePassRule {
             class_selector: 0,
             attribute_group: 0,
             condition_mode: 0,
@@ -52,11 +50,11 @@ pub const EVIDENCE_AIR_SCENE_BASE_PASSES: [EvidenceBasePassProfile; 5] = [
             order_threshold: 0,
         },
     },
-    EvidenceBasePassProfile {
+    BasePassProfile {
         name: "PunchPass",
         pass_index: 12,
         entry: true,
-        rule: EvidenceScenePassRule {
+        rule: ScenePassRule {
             class_selector: 1,
             attribute_group: 0,
             condition_mode: 0,
@@ -65,12 +63,12 @@ pub const EVIDENCE_AIR_SCENE_BASE_PASSES: [EvidenceBasePassProfile; 5] = [
             order_threshold: 0,
         },
     },
-    EvidenceBasePassProfile {
+    BasePassProfile {
         // The spelling is copied exactly from the binary string table.
         name: "TrancePass",
         pass_index: 16,
         entry: true,
-        rule: EvidenceScenePassRule {
+        rule: ScenePassRule {
             class_selector: 2,
             attribute_group: 0,
             condition_mode: 0,
@@ -79,11 +77,11 @@ pub const EVIDENCE_AIR_SCENE_BASE_PASSES: [EvidenceBasePassProfile; 5] = [
             order_threshold: 0,
         },
     },
-    EvidenceBasePassProfile {
+    BasePassProfile {
         name: "Front2DPass",
         pass_index: 24,
         entry: true,
-        rule: EvidenceScenePassRule {
+        rule: ScenePassRule {
             class_selector: 3,
             attribute_group: 0,
             condition_mode: 3,
@@ -95,7 +93,7 @@ pub const EVIDENCE_AIR_SCENE_BASE_PASSES: [EvidenceBasePassProfile; 5] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EvidenceScenePassRule {
+pub struct ScenePassRule {
     pub class_selector: u32,
     pub attribute_group: u32,
     pub condition_mode: u32,
@@ -105,7 +103,7 @@ pub struct EvidenceScenePassRule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EvidenceScenePassClassificationInput {
+pub struct ScenePassClassificationInput {
     pub command_class: u32,
     pub attribute_group: u32,
     pub depth: f32,
@@ -113,13 +111,13 @@ pub struct EvidenceScenePassClassificationInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EvidenceSelectedScenePass {
+pub struct SelectedScenePass {
     pub pass_index: usize,
     pub stores_depth: bool,
 }
 
 /// Reproduces the type-1 command classifier at `sub_63E760`.
-pub const fn classify_evidence_type1_command(flags_60: u32, packet_84_low: u8) -> u32 {
+pub const fn classify_type1_command(flags_60: u32, packet_84_low: u8) -> u32 {
     let mut class = if flags_60 & 0x20 != 0 {
         2
     } else if flags_60 & 0x40 != 0 {
@@ -136,18 +134,18 @@ pub const fn classify_evidence_type1_command(flags_60: u32, packet_84_low: u8) -
     class
 }
 
-pub const fn classify_evidence_srd_type1_command(flags_60: u32) -> u32 {
-    classify_evidence_type1_command(flags_60, SRD_COMMAND_PACKET_84_LOW)
+pub const fn classify_srd_type1_command(flags_60: u32) -> u32 {
+    classify_type1_command(flags_60, SRD_COMMAND_PACKET_84_LOW)
 }
 
-pub const fn evidence_type1_attribute_group(packet_64: u32) -> u32 {
+pub const fn type1_attribute_group(packet_64: u32) -> u32 {
     (packet_64 >> 25) & 0x0f
 }
 
 /// Reproduces the dispatch gate in `sea::BasicScene` virtual `+0x44`
 /// (`sub_601C60`). A disabled scene is not asked to filter the global queue;
 /// DrawIndex 31 also produces no dispatch because the sign bit is cleared.
-pub const fn evidence_scene_target_dispatch_mask(enabled: bool, draw_index: u8) -> Option<u32> {
+pub const fn scene_target_dispatch_mask(enabled: bool, draw_index: u8) -> Option<u32> {
     if !enabled {
         return None;
     }
@@ -160,7 +158,7 @@ pub const fn evidence_scene_target_dispatch_mask(enabled: bool, draw_index: u8) 
 /// `sub_63EA50`. The three packet fields are the exact values read from
 /// packet `+0x58`, `+0x60`, and command copy `+0x10`/packet `+0x84`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EvidenceType1TargetFilterInput {
+pub struct Type1TargetFilterInput {
     pub target_mask: u32,
     pub target_attribute: u8,
     pub command_draw_mask: u32,
@@ -169,7 +167,7 @@ pub struct EvidenceType1TargetFilterInput {
     pub packet_84_low: u8,
 }
 
-pub const fn evidence_type1_target_filter_accepts(input: EvidenceType1TargetFilterInput) -> bool {
+pub const fn type1_target_filter_accepts(input: Type1TargetFilterInput) -> bool {
     if input.target_mask != 0 && input.target_mask & input.command_draw_mask == 0 {
         return false;
     }
@@ -191,37 +189,77 @@ pub const fn evidence_type1_target_filter_accepts(input: EvidenceType1TargetFilt
     input.packet_84_low & 0x02 == 0
 }
 
+/// Backend-neutral fields used to admit and classify one editor draw in the
+/// recovered scene target queue. Raw Ceylon packet offsets do not cross this
+/// boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SrdQueueState {
+    pub target_attributes: u8,
+    pub command_class: u8,
+    pub attribute_group: u8,
+    pub target_attribute_one_enabled: bool,
+    pub rejected: bool,
+}
+
+impl SrdQueueState {
+    pub const fn surface(alpha_blend_enabled: bool) -> Self {
+        Self {
+            target_attributes: if alpha_blend_enabled { 0xf7 } else { 0xff },
+            command_class: 3,
+            attribute_group: 0,
+            target_attribute_one_enabled: false,
+            rejected: false,
+        }
+    }
+
+    pub const fn fennel() -> Self {
+        Self {
+            target_attributes: 0xff,
+            command_class: 3,
+            attribute_group: 0,
+            target_attribute_one_enabled: false,
+            rejected: false,
+        }
+    }
+}
+
 /// Proven SRD type-1 specialization. Global SRD queue construction copies
 /// packet `+0x84` into command `+0x10`; the normal submit path leaves its low
 /// byte at `0x11`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EvidenceSrdType1TargetFilter {
+pub struct SrdType1TargetFilter {
     pub target_dispatch_mask: Option<u32>,
     pub target_attribute: u8,
     pub command_draw_mask: u32,
 }
 
-impl EvidenceSrdType1TargetFilter {
-    pub const fn accepts(self, packet: CeylonDrawPacketPresetState) -> bool {
+impl SrdType1TargetFilter {
+    pub const fn accepts(self, state: SrdQueueState) -> bool {
         let Some(target_mask) = self.target_dispatch_mask else {
             return false;
         };
-        evidence_type1_target_filter_accepts(EvidenceType1TargetFilterInput {
-            target_mask,
-            target_attribute: self.target_attribute,
-            command_draw_mask: self.command_draw_mask,
-            packet_58_low: packet.flags_58 as u8,
-            packet_flags_60: packet.flags_60,
-            packet_84_low: SRD_COMMAND_PACKET_84_LOW,
-        })
+        if target_mask != 0 && target_mask & self.command_draw_mask == 0 {
+            return false;
+        }
+        if state.rejected {
+            return false;
+        }
+        let attribute_bit = 1u32.wrapping_shl((self.target_attribute as u32) & 31) as u8;
+        if state.target_attributes & attribute_bit == 0 {
+            return false;
+        }
+        if self.target_attribute == 1 && !state.target_attribute_one_enabled {
+            return false;
+        }
+        true
     }
 }
 
 /// Reproduces `sub_64BAB0`'s forward, first-match rule scan.
-pub fn select_evidence_scene_pass(
-    rules: &[EvidenceScenePassRule],
-    input: EvidenceScenePassClassificationInput,
-) -> Option<EvidenceSelectedScenePass> {
+pub fn select_scene_pass(
+    rules: &[ScenePassRule],
+    input: ScenePassClassificationInput,
+) -> Option<SelectedScenePass> {
     if input.command_class >= 8 {
         return None;
     }
@@ -233,7 +271,7 @@ pub fn select_evidence_scene_pass(
         {
             return None;
         }
-        Some(EvidenceSelectedScenePass {
+        Some(SelectedScenePass {
             pass_index,
             stores_depth: rule.depth_store_selector < 8,
         })
@@ -241,15 +279,15 @@ pub fn select_evidence_scene_pass(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvidenceScenePassInvariantError(pub String);
+pub struct ScenePassInvariantError(pub String);
 
-impl fmt::Display for EvidenceScenePassInvariantError {
+impl fmt::Display for ScenePassInvariantError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-impl std::error::Error for EvidenceScenePassInvariantError {}
+impl std::error::Error for ScenePassInvariantError {}
 
 /// Selects a pass only when the forward rule scan has a provably identical
 /// result for every possible command depth and every `u16` order value.
@@ -258,11 +296,11 @@ impl std::error::Error for EvidenceScenePassInvariantError {}
 /// order condition that divides the `u16` domain, stops the proof instead of
 /// substituting an editor-owned value. Rules that are impossible over the
 /// complete domain are skipped; the first universally true rule is selected.
-pub fn select_evidence_scene_pass_without_depth_or_order(
-    rules: &[EvidenceScenePassRule],
+pub fn select_scene_pass_without_depth_or_order(
+    rules: &[ScenePassRule],
     command_class: u32,
     attribute_group: u32,
-) -> Result<Option<EvidenceSelectedScenePass>, EvidenceScenePassInvariantError> {
+) -> Result<Option<SelectedScenePass>, ScenePassInvariantError> {
     if command_class >= 8 {
         return Ok(None);
     }
@@ -275,15 +313,15 @@ pub fn select_evidence_scene_pass_without_depth_or_order(
         }
 
         match condition_domain(rule) {
-            EvidenceConditionDomain::Never => continue,
-            EvidenceConditionDomain::Always => {
-                return Ok(Some(EvidenceSelectedScenePass {
+            ConditionDomain::Never => continue,
+            ConditionDomain::Always => {
+                return Ok(Some(SelectedScenePass {
                     pass_index,
                     stores_depth: rule.depth_store_selector < 8,
                 }));
             }
-            EvidenceConditionDomain::InputDependent => {
-                return Err(EvidenceScenePassInvariantError(format!(
+            ConditionDomain::InputDependent => {
+                return Err(ScenePassInvariantError(format!(
                     "matching rule {pass_index} depends on unprovided depth/order input"
                 )));
             }
@@ -293,27 +331,27 @@ pub fn select_evidence_scene_pass_without_depth_or_order(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EvidenceConditionDomain {
+enum ConditionDomain {
     Never,
     Always,
     InputDependent,
 }
 
-fn condition_domain(rule: EvidenceScenePassRule) -> EvidenceConditionDomain {
+fn condition_domain(rule: ScenePassRule) -> ConditionDomain {
     match rule.condition_mode {
-        0 => EvidenceConditionDomain::Always,
+        0 => ConditionDomain::Always,
         // A NaN threshold makes either comparison false for every f32 input.
         // All other depth thresholds retain at least one input-dependent edge,
         // including infinities and NaN command depths.
-        1 | 2 if rule.depth_threshold.is_nan() => EvidenceConditionDomain::Never,
-        1 | 2 => EvidenceConditionDomain::InputDependent,
-        3 if rule.order_threshold == 0 => EvidenceConditionDomain::Always,
-        3 if rule.order_threshold > u32::from(u16::MAX) => EvidenceConditionDomain::Never,
-        3 => EvidenceConditionDomain::InputDependent,
-        4 if rule.order_threshold == 0 => EvidenceConditionDomain::Never,
-        4 if rule.order_threshold > u32::from(u16::MAX) => EvidenceConditionDomain::Always,
-        4 => EvidenceConditionDomain::InputDependent,
-        _ => EvidenceConditionDomain::Never,
+        1 | 2 if rule.depth_threshold.is_nan() => ConditionDomain::Never,
+        1 | 2 => ConditionDomain::InputDependent,
+        3 if rule.order_threshold == 0 => ConditionDomain::Always,
+        3 if rule.order_threshold > u32::from(u16::MAX) => ConditionDomain::Never,
+        3 => ConditionDomain::InputDependent,
+        4 if rule.order_threshold == 0 => ConditionDomain::Never,
+        4 if rule.order_threshold > u32::from(u16::MAX) => ConditionDomain::Always,
+        4 => ConditionDomain::InputDependent,
+        _ => ConditionDomain::Never,
     }
 }
 
@@ -324,10 +362,7 @@ const fn class_selector_matches(selector: u32, command_class: u32) -> bool {
         || selector == 5 && command_class <= 2
 }
 
-fn condition_matches(
-    rule: EvidenceScenePassRule,
-    input: EvidenceScenePassClassificationInput,
-) -> bool {
+fn condition_matches(rule: ScenePassRule, input: ScenePassClassificationInput) -> bool {
     match rule.condition_mode {
         0 => true,
         1 => rule.depth_threshold > input.depth,
@@ -341,27 +376,27 @@ fn condition_matches(
 /// Inclusive SceneModelModule pass-index range stored by one target EntryInfo.
 /// The binary initializes unused entries to `(-1, -1)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EvidenceScenePassRange {
+pub struct ScenePassRange {
     pub first: i32,
     pub last: i32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EvidenceScenePassProfile {
-    pub rules: Vec<EvidenceScenePassRule>,
-    pub target_entries: [EvidenceScenePassRange; SCENE_TARGET_ENTRY_COUNT],
+pub struct ScenePassProfile {
+    pub rules: Vec<ScenePassRule>,
+    pub target_entries: [ScenePassRange; SCENE_TARGET_ENTRY_COUNT],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvidenceScenePassProfileError(pub String);
+pub struct ScenePassProfileError(pub String);
 
-impl fmt::Display for EvidenceScenePassProfileError {
+impl fmt::Display for ScenePassProfileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-impl std::error::Error for EvidenceScenePassProfileError {}
+impl std::error::Error for ScenePassProfileError {}
 
 /// Reproduces the `sub_64BDA0 -> sub_64F970` profile build:
 ///
@@ -369,27 +404,27 @@ impl std::error::Error for EvidenceScenePassProfileError {}
 /// - enabled rules receive compact indices in registration order;
 /// - the BasePass `PassIndex` property selects one of 32 EntryInfo slots;
 /// - the slot keeps the first compact rule index and always updates the last.
-pub fn build_evidence_scene_pass_profile(
-    base_passes: &[EvidenceBasePassProfile],
-) -> Result<EvidenceScenePassProfile, EvidenceScenePassProfileError> {
+pub fn build_scene_pass_profile(
+    base_passes: &[BasePassProfile],
+) -> Result<ScenePassProfile, ScenePassProfileError> {
     let mut rules = Vec::new();
-    let mut target_entries = [EvidenceScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
+    let mut target_entries = [ScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
 
     for base_pass in base_passes {
         if !base_pass.entry {
             continue;
         }
         let compact_rule_index = i32::try_from(rules.len()).map_err(|_| {
-            EvidenceScenePassProfileError("active BasePass rule count exceeds i32".to_string())
+            ScenePassProfileError("active BasePass rule count exceeds i32".to_string())
         })?;
         let entry_index = usize::try_from(base_pass.pass_index).map_err(|_| {
-            EvidenceScenePassProfileError(format!(
+            ScenePassProfileError(format!(
                 "BasePass {:?} PassIndex {} does not fit usize",
                 base_pass.name, base_pass.pass_index
             ))
         })?;
         let Some(entry) = target_entries.get_mut(entry_index) else {
-            return Err(EvidenceScenePassProfileError(format!(
+            return Err(ScenePassProfileError(format!(
                 "BasePass {:?} PassIndex {} is outside the binary's 32 EntryInfo slots",
                 base_pass.name, base_pass.pass_index
             )));
@@ -402,13 +437,13 @@ pub fn build_evidence_scene_pass_profile(
         entry.last = compact_rule_index;
     }
 
-    Ok(EvidenceScenePassProfile {
+    Ok(ScenePassProfile {
         rules,
         target_entries,
     })
 }
 
-impl EvidenceScenePassRange {
+impl ScenePassRange {
     pub const DISABLED: Self = Self {
         first: -1,
         last: -1,
@@ -420,15 +455,15 @@ impl EvidenceScenePassRange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvidenceScenePassOrderError(pub String);
+pub struct ScenePassOrderError(pub String);
 
-impl fmt::Display for EvidenceScenePassOrderError {
+impl fmt::Display for ScenePassOrderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-impl std::error::Error for EvidenceScenePassOrderError {}
+impl std::error::Error for ScenePassOrderError {}
 
 /// Reproduces the proven SceneModelModule queue/flush ordering after every
 /// command has already been classified to a pass-rule index.
@@ -440,15 +475,15 @@ impl std::error::Error for EvidenceScenePassOrderError {}
 /// overlapping ranges therefore repeat the same queued item indices.
 ///
 /// This deliberately does not classify packets or invent a target profile.
-pub fn build_evidence_scene_model_submission_indices(
+pub fn build_scene_model_submission_indices(
     classified_pass_indices: &[usize],
     pass_count: usize,
-    target_entries: &[EvidenceScenePassRange; SCENE_TARGET_ENTRY_COUNT],
-) -> Result<Vec<usize>, EvidenceScenePassOrderError> {
+    target_entries: &[ScenePassRange; SCENE_TARGET_ENTRY_COUNT],
+) -> Result<Vec<usize>, ScenePassOrderError> {
     let mut pass_items = vec![Vec::new(); pass_count];
     for (item_index, &pass_index) in classified_pass_indices.iter().enumerate() {
         let Some(pass) = pass_items.get_mut(pass_index) else {
-            return Err(EvidenceScenePassOrderError(format!(
+            return Err(ScenePassOrderError(format!(
                 "classified item {item_index} uses pass {pass_index}, but the SceneModelModule has only {pass_count} passes"
             )));
         };
@@ -474,15 +509,15 @@ pub fn build_evidence_scene_model_submission_indices(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvidenceSrdSceneSubmissionError(pub String);
+pub struct SrdSceneSubmissionError(pub String);
 
-impl fmt::Display for EvidenceSrdSceneSubmissionError {
+impl fmt::Display for SrdSceneSubmissionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-impl std::error::Error for EvidenceSrdSceneSubmissionError {}
+impl std::error::Error for SrdSceneSubmissionError {}
 
 /// Classifies already target-admitted normal SRD/Fennel commands and applies
 /// the target's exact SceneModelModule flush order without inventing depth or
@@ -491,38 +526,38 @@ impl std::error::Error for EvidenceSrdSceneSubmissionError {}
 /// Target-filter activation and adjacent packet merging happen outside this
 /// helper; the returned indices preserve the logical command order on either
 /// side of a merge but do not claim a final GPU packet count.
-pub fn build_evidence_srd_scene_submission_indices(
-    packets: &[CeylonDrawPacketPresetState],
-    profile: &EvidenceScenePassProfile,
-) -> Result<Vec<usize>, EvidenceSrdSceneSubmissionError> {
-    let mut classified_pass_indices = Vec::with_capacity(packets.len());
-    for (command_index, packet) in packets.iter().copied().enumerate() {
-        let command_class = classify_evidence_srd_type1_command(packet.flags_60);
-        let attribute_group = evidence_type1_attribute_group(packet.flags_64);
-        let selected = select_evidence_scene_pass_without_depth_or_order(
+pub fn build_srd_scene_submission_indices(
+    states: &[SrdQueueState],
+    profile: &ScenePassProfile,
+) -> Result<Vec<usize>, SrdSceneSubmissionError> {
+    let mut classified_pass_indices = Vec::with_capacity(states.len());
+    for (command_index, state) in states.iter().copied().enumerate() {
+        let command_class = u32::from(state.command_class);
+        let attribute_group = u32::from(state.attribute_group);
+        let selected = select_scene_pass_without_depth_or_order(
             &profile.rules,
             command_class,
             attribute_group,
         )
         .map_err(|error| {
-            EvidenceSrdSceneSubmissionError(format!(
+            SrdSceneSubmissionError(format!(
                 "SRD command {command_index} cannot be classified without guessing: {error}"
             ))
         })?
         .ok_or_else(|| {
-            EvidenceSrdSceneSubmissionError(format!(
+            SrdSceneSubmissionError(format!(
                 "SRD command {command_index} with class {command_class} and attribute group {attribute_group} matches no scene pass"
             ))
         })?;
         classified_pass_indices.push(selected.pass_index);
     }
 
-    build_evidence_scene_model_submission_indices(
+    build_scene_model_submission_indices(
         &classified_pass_indices,
         profile.rules.len(),
         &profile.target_entries,
     )
-    .map_err(|error| EvidenceSrdSceneSubmissionError(error.0))
+    .map_err(|error| SrdSceneSubmissionError(error.0))
 }
 
 #[cfg(test)]
@@ -531,36 +566,33 @@ mod tests {
 
     #[test]
     fn type1_classifier_preserves_binary_override_order() {
-        assert_eq!(classify_evidence_type1_command(0, 0), 0);
-        assert_eq!(classify_evidence_type1_command(0x40, 0), 1);
-        assert_eq!(classify_evidence_type1_command(0x20 | 0x40, 0), 2);
-        assert_eq!(classify_evidence_type1_command(0x20, 0x10), 3);
-        assert_eq!(classify_evidence_type1_command(0x80 | 0x2000, 0), 4);
-        assert_eq!(classify_evidence_srd_type1_command(0x4000), 3);
-        assert_eq!(classify_evidence_srd_type1_command(0x6000), 4);
+        assert_eq!(classify_type1_command(0, 0), 0);
+        assert_eq!(classify_type1_command(0x40, 0), 1);
+        assert_eq!(classify_type1_command(0x20 | 0x40, 0), 2);
+        assert_eq!(classify_type1_command(0x20, 0x10), 3);
+        assert_eq!(classify_type1_command(0x80 | 0x2000, 0), 4);
+        assert_eq!(classify_srd_type1_command(0x4000), 3);
+        assert_eq!(classify_srd_type1_command(0x6000), 4);
     }
 
     #[test]
     fn packet_64_attribute_group_uses_only_bits_25_through_28() {
-        assert_eq!(evidence_type1_attribute_group(0), 0);
-        assert_eq!(evidence_type1_attribute_group(0x1e00_0000), 0x0f);
-        assert_eq!(evidence_type1_attribute_group(0xe1ff_ffff), 0);
+        assert_eq!(type1_attribute_group(0), 0);
+        assert_eq!(type1_attribute_group(0x1e00_0000), 0x0f);
+        assert_eq!(type1_attribute_group(0xe1ff_ffff), 0);
     }
 
     #[test]
     fn basic_scene_dispatch_gate_uses_enable_and_signed_bit_suppression() {
-        assert_eq!(evidence_scene_target_dispatch_mask(false, 0), None);
-        assert_eq!(evidence_scene_target_dispatch_mask(true, 0), Some(1));
-        assert_eq!(
-            evidence_scene_target_dispatch_mask(true, 16),
-            Some(0x1_0000)
-        );
-        assert_eq!(evidence_scene_target_dispatch_mask(true, 31), None);
+        assert_eq!(scene_target_dispatch_mask(false, 0), None);
+        assert_eq!(scene_target_dispatch_mask(true, 0), Some(1));
+        assert_eq!(scene_target_dispatch_mask(true, 16), Some(0x1_0000));
+        assert_eq!(scene_target_dispatch_mask(true, 31), None);
     }
 
     #[test]
     fn type1_target_filter_preserves_every_binary_rejection_gate() {
-        let accepted = EvidenceType1TargetFilterInput {
+        let accepted = Type1TargetFilterInput {
             target_mask: 1,
             target_attribute: 0,
             command_draw_mask: 0xffff,
@@ -568,51 +600,39 @@ mod tests {
             packet_flags_60: 0x4000,
             packet_84_low: SRD_COMMAND_PACKET_84_LOW,
         };
-        assert!(evidence_type1_target_filter_accepts(accepted));
-        assert!(!evidence_type1_target_filter_accepts(
-            EvidenceType1TargetFilterInput {
-                target_mask: 0x1_0000,
-                ..accepted
-            }
-        ));
-        assert!(!evidence_type1_target_filter_accepts(
-            EvidenceType1TargetFilterInput {
-                packet_flags_60: accepted.packet_flags_60 | 0x100,
-                ..accepted
-            }
-        ));
-        assert!(!evidence_type1_target_filter_accepts(
-            EvidenceType1TargetFilterInput {
-                target_attribute: 2,
-                packet_58_low: 0xfb,
-                ..accepted
-            }
-        ));
-        assert!(!evidence_type1_target_filter_accepts(
-            EvidenceType1TargetFilterInput {
-                target_attribute: 1,
-                ..accepted
-            }
-        ));
-        assert!(evidence_type1_target_filter_accepts(
-            EvidenceType1TargetFilterInput {
-                target_attribute: 1,
-                packet_flags_60: accepted.packet_flags_60 | 0x04,
-                ..accepted
-            }
-        ));
-        assert!(!evidence_type1_target_filter_accepts(
-            EvidenceType1TargetFilterInput {
-                packet_84_low: accepted.packet_84_low | 0x02,
-                ..accepted
-            }
-        ));
+        assert!(type1_target_filter_accepts(accepted));
+        assert!(!type1_target_filter_accepts(Type1TargetFilterInput {
+            target_mask: 0x1_0000,
+            ..accepted
+        }));
+        assert!(!type1_target_filter_accepts(Type1TargetFilterInput {
+            packet_flags_60: accepted.packet_flags_60 | 0x100,
+            ..accepted
+        }));
+        assert!(!type1_target_filter_accepts(Type1TargetFilterInput {
+            target_attribute: 2,
+            packet_58_low: 0xfb,
+            ..accepted
+        }));
+        assert!(!type1_target_filter_accepts(Type1TargetFilterInput {
+            target_attribute: 1,
+            ..accepted
+        }));
+        assert!(type1_target_filter_accepts(Type1TargetFilterInput {
+            target_attribute: 1,
+            packet_flags_60: accepted.packet_flags_60 | 0x04,
+            ..accepted
+        }));
+        assert!(!type1_target_filter_accepts(Type1TargetFilterInput {
+            packet_84_low: accepted.packet_84_low | 0x02,
+            ..accepted
+        }));
     }
 
     #[test]
     fn rule_scan_uses_first_matching_selector_and_attribute_group() {
         let rules = [
-            EvidenceScenePassRule {
+            ScenePassRule {
                 class_selector: 6,
                 attribute_group: 1,
                 condition_mode: 0,
@@ -620,7 +640,7 @@ mod tests {
                 depth_threshold: 0.0,
                 order_threshold: 0,
             },
-            EvidenceScenePassRule {
+            ScenePassRule {
                 class_selector: 6,
                 attribute_group: 0,
                 condition_mode: 0,
@@ -628,7 +648,7 @@ mod tests {
                 depth_threshold: 0.0,
                 order_threshold: 0,
             },
-            EvidenceScenePassRule {
+            ScenePassRule {
                 class_selector: 3,
                 attribute_group: 0,
                 condition_mode: 0,
@@ -639,16 +659,16 @@ mod tests {
         ];
 
         assert_eq!(
-            select_evidence_scene_pass(
+            select_scene_pass(
                 &rules,
-                EvidenceScenePassClassificationInput {
+                ScenePassClassificationInput {
                     command_class: 3,
                     attribute_group: 0,
                     depth: 0.0,
                     order: 0,
                 }
             ),
-            Some(EvidenceSelectedScenePass {
+            Some(SelectedScenePass {
                 pass_index: 1,
                 stores_depth: false,
             })
@@ -657,7 +677,7 @@ mod tests {
 
     #[test]
     fn rule_class_selectors_five_and_seven_keep_their_exact_ranges() {
-        let rule = |class_selector| EvidenceScenePassRule {
+        let rule = |class_selector| ScenePassRule {
             class_selector,
             attribute_group: 0,
             condition_mode: 0,
@@ -665,28 +685,28 @@ mod tests {
             depth_threshold: 0.0,
             order_threshold: 0,
         };
-        let input = |command_class| EvidenceScenePassClassificationInput {
+        let input = |command_class| ScenePassClassificationInput {
             command_class,
             attribute_group: 0,
             depth: 0.0,
             order: 0,
         };
 
-        assert!(select_evidence_scene_pass(&[rule(7)], input(1)).is_some());
-        assert!(select_evidence_scene_pass(&[rule(7)], input(2)).is_none());
-        assert!(select_evidence_scene_pass(&[rule(5)], input(2)).is_some());
-        assert!(select_evidence_scene_pass(&[rule(5)], input(3)).is_none());
+        assert!(select_scene_pass(&[rule(7)], input(1)).is_some());
+        assert!(select_scene_pass(&[rule(7)], input(2)).is_none());
+        assert!(select_scene_pass(&[rule(5)], input(2)).is_some());
+        assert!(select_scene_pass(&[rule(5)], input(3)).is_none());
     }
 
     #[test]
     fn rule_condition_modes_match_depth_order_and_nan_edges() {
-        let input = EvidenceScenePassClassificationInput {
+        let input = ScenePassClassificationInput {
             command_class: 3,
             attribute_group: 0,
             depth: 5.0,
             order: 10,
         };
-        let rule = |condition_mode, depth_threshold, order_threshold| EvidenceScenePassRule {
+        let rule = |condition_mode, depth_threshold, order_threshold| ScenePassRule {
             class_selector: 3,
             attribute_group: 0,
             condition_mode,
@@ -695,19 +715,19 @@ mod tests {
             order_threshold,
         };
 
-        assert!(select_evidence_scene_pass(&[rule(1, 6.0, 0)], input).is_some());
-        assert!(select_evidence_scene_pass(&[rule(1, 5.0, 0)], input).is_none());
-        assert!(select_evidence_scene_pass(&[rule(2, 5.0, 0)], input).is_some());
-        assert!(select_evidence_scene_pass(&[rule(2, 6.0, 0)], input).is_none());
-        assert!(select_evidence_scene_pass(&[rule(3, 0.0, 10)], input).is_some());
-        assert!(select_evidence_scene_pass(&[rule(3, 0.0, 11)], input).is_none());
-        assert!(select_evidence_scene_pass(&[rule(4, 0.0, 11)], input).is_some());
-        assert!(select_evidence_scene_pass(&[rule(4, 0.0, 10)], input).is_none());
-        assert!(select_evidence_scene_pass(&[rule(1, f32::NAN, 0)], input).is_none());
+        assert!(select_scene_pass(&[rule(1, 6.0, 0)], input).is_some());
+        assert!(select_scene_pass(&[rule(1, 5.0, 0)], input).is_none());
+        assert!(select_scene_pass(&[rule(2, 5.0, 0)], input).is_some());
+        assert!(select_scene_pass(&[rule(2, 6.0, 0)], input).is_none());
+        assert!(select_scene_pass(&[rule(3, 0.0, 10)], input).is_some());
+        assert!(select_scene_pass(&[rule(3, 0.0, 11)], input).is_none());
+        assert!(select_scene_pass(&[rule(4, 0.0, 11)], input).is_some());
+        assert!(select_scene_pass(&[rule(4, 0.0, 10)], input).is_none());
+        assert!(select_scene_pass(&[rule(1, f32::NAN, 0)], input).is_none());
         assert!(
-            select_evidence_scene_pass(
+            select_scene_pass(
                 &[rule(2, 0.0, 0)],
-                EvidenceScenePassClassificationInput {
+                ScenePassClassificationInput {
                     depth: f32::NAN,
                     ..input
                 }
@@ -719,7 +739,7 @@ mod tests {
     #[test]
     fn air_scene_default_base_pass_table_matches_the_binary_records() {
         assert_eq!(
-            EVIDENCE_AIR_SCENE_BASE_PASSES
+            AIR_SCENE_BASE_PASSES
                 .iter()
                 .map(|pass| (pass.name, pass.pass_index))
                 .collect::<Vec<_>>(),
@@ -732,17 +752,17 @@ mod tests {
             ]
         );
         assert!(
-            EVIDENCE_AIR_SCENE_BASE_PASSES
+            AIR_SCENE_BASE_PASSES
                 .iter()
                 .all(|pass| pass.entry && pass.rule.attribute_group == 0)
         );
 
-        let back = EVIDENCE_AIR_SCENE_BASE_PASSES[0].rule;
+        let back = AIR_SCENE_BASE_PASSES[0].rule;
         assert_eq!((back.class_selector, back.condition_mode), (3, 4));
         assert_eq!(back.depth_store_selector, 5);
         assert_eq!(back.order_threshold, 8_388_608);
 
-        let front = EVIDENCE_AIR_SCENE_BASE_PASSES[4].rule;
+        let front = AIR_SCENE_BASE_PASSES[4].rule;
         assert_eq!((front.class_selector, front.condition_mode), (3, 3));
         assert_eq!(front.depth_store_selector, 5);
         assert_eq!(front.order_threshold, 8_388_608);
@@ -750,71 +770,62 @@ mod tests {
 
     #[test]
     fn air_scene_profile_uses_pass_index_as_entry_slot_not_rule_index() {
-        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES)
+        let profile = build_scene_pass_profile(&AIR_SCENE_BASE_PASSES)
             .expect("binary PassIndex values are within 0..31");
 
         assert_eq!(profile.rules.len(), 5);
         for (entry_index, compact_rule_index) in [(4, 0), (8, 1), (12, 2), (16, 3), (24, 4)] {
             assert_eq!(
                 profile.target_entries[entry_index],
-                EvidenceScenePassRange::inclusive(compact_rule_index, compact_rule_index)
+                ScenePassRange::inclusive(compact_rule_index, compact_rule_index)
             );
         }
         for (entry_index, entry) in profile.target_entries.iter().enumerate() {
             if ![4, 8, 12, 16, 24].contains(&entry_index) {
-                assert_eq!(*entry, EvidenceScenePassRange::DISABLED);
+                assert_eq!(*entry, ScenePassRange::DISABLED);
             }
         }
     }
 
     #[test]
     fn profile_builder_skips_disabled_entries_and_extends_duplicate_slots() {
-        let mut passes = EVIDENCE_AIR_SCENE_BASE_PASSES;
+        let mut passes = AIR_SCENE_BASE_PASSES;
         passes[1].entry = false;
         passes[2].pass_index = 4;
 
-        let profile = build_evidence_scene_pass_profile(&passes).unwrap();
+        let profile = build_scene_pass_profile(&passes).unwrap();
         assert_eq!(profile.rules.len(), 4);
-        assert_eq!(
-            profile.target_entries[4],
-            EvidenceScenePassRange::inclusive(0, 1)
-        );
-        assert_eq!(profile.target_entries[8], EvidenceScenePassRange::DISABLED);
-        assert_eq!(
-            profile.target_entries[16],
-            EvidenceScenePassRange::inclusive(2, 2)
-        );
-        assert_eq!(
-            profile.target_entries[24],
-            EvidenceScenePassRange::inclusive(3, 3)
-        );
+        assert_eq!(profile.target_entries[4], ScenePassRange::inclusive(0, 1));
+        assert_eq!(profile.target_entries[8], ScenePassRange::DISABLED);
+        assert_eq!(profile.target_entries[16], ScenePassRange::inclusive(2, 2));
+        assert_eq!(profile.target_entries[24], ScenePassRange::inclusive(3, 3));
     }
 
     #[test]
     fn profile_builder_rejects_pass_index_outside_the_proven_property_range() {
-        let invalid = EvidenceBasePassProfile {
+        let invalid = BasePassProfile {
             pass_index: SCENE_TARGET_ENTRY_COUNT as u32,
-            ..EVIDENCE_AIR_SCENE_BASE_PASSES[0]
+            ..AIR_SCENE_BASE_PASSES[0]
         };
-        let error = build_evidence_scene_pass_profile(&[invalid]).unwrap_err();
+        let error = build_scene_pass_profile(&[invalid]).unwrap_err();
         assert!(error.0.contains("outside the binary's 32 EntryInfo slots"));
     }
 
     #[test]
     fn default_srd_class_three_routes_to_back_2d_first() {
-        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES).unwrap();
+        let profile = build_scene_pass_profile(&AIR_SCENE_BASE_PASSES).unwrap();
         for order in [0, u16::MAX] {
             assert_eq!(
-                select_evidence_scene_pass(
+                select_scene_pass(
                     &profile.rules,
-                    EvidenceScenePassClassificationInput {
+                    ScenePassClassificationInput {
                         command_class: 3,
                         attribute_group: 0,
                         depth: 0.0,
                         order,
                     }
                 ),
-                Some(EvidenceSelectedScenePass {
+                Some(SelectedScenePass {
                     pass_index: 0,
                     stores_depth: true,
                 })
@@ -824,10 +835,10 @@ mod tests {
 
     #[test]
     fn default_air_scene_selection_is_proven_without_depth_or_order_inputs() {
-        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES).unwrap();
+        let profile = build_scene_pass_profile(&AIR_SCENE_BASE_PASSES).unwrap();
         assert_eq!(
-            select_evidence_scene_pass_without_depth_or_order(&profile.rules, 3, 0),
-            Ok(Some(EvidenceSelectedScenePass {
+            select_scene_pass_without_depth_or_order(&profile.rules, 3, 0),
+            Ok(Some(SelectedScenePass {
                 pass_index: 0,
                 stores_depth: true,
             }))
@@ -836,7 +847,7 @@ mod tests {
 
     #[test]
     fn invariant_selector_rejects_a_rule_that_splits_the_order_domain() {
-        let rule = EvidenceScenePassRule {
+        let rule = ScenePassRule {
             class_selector: 3,
             attribute_group: 0,
             condition_mode: 4,
@@ -844,49 +855,40 @@ mod tests {
             depth_threshold: 0.0,
             order_threshold: 100,
         };
-        let error = select_evidence_scene_pass_without_depth_or_order(&[rule], 3, 0).unwrap_err();
+        let error = select_scene_pass_without_depth_or_order(&[rule], 3, 0).unwrap_err();
         assert!(error.0.contains("depends on unprovided depth/order input"));
     }
 
     #[test]
-    fn normal_image_and_fennel_packets_share_the_exact_default_air_pass() {
-        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES).unwrap();
-        let mut image = CeylonDrawPacketPresetState::srd_renderer_initial();
-        image.set_render_preset_id(4);
-        image.set_srd_quad_is_2d(false);
-        let fennel = CeylonDrawPacketPresetState {
-            draw_flags_00: 0x02af_e003,
-            flags_58: 0xff,
-            flags_60: 0x40a0,
-            ..CeylonDrawPacketPresetState::default()
-        };
+    fn normal_surface_and_fennel_states_share_the_default_air_pass() {
+        let profile = build_scene_pass_profile(&AIR_SCENE_BASE_PASSES).unwrap();
+        let image = SrdQueueState::surface(true);
+        let fennel = SrdQueueState::fennel();
 
-        assert_eq!(image.flags_64, 0);
-        assert_eq!(fennel.flags_64, 0);
         assert_eq!(
-            build_evidence_srd_scene_submission_indices(&[image, fennel], &profile).unwrap(),
+            build_srd_scene_submission_indices(&[image, fennel], &profile).unwrap(),
             vec![0, 1]
         );
     }
 
     #[test]
-    fn class_four_packet_is_not_forced_into_an_unproven_default_pass() {
-        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES).unwrap();
-        let packet = CeylonDrawPacketPresetState {
-            flags_60: 0x6000,
-            ..CeylonDrawPacketPresetState::srd_renderer_initial()
+    fn class_four_state_is_not_forced_into_an_unproven_default_pass() {
+        let profile = build_scene_pass_profile(&AIR_SCENE_BASE_PASSES).unwrap();
+        let state = SrdQueueState {
+            command_class: 4,
+            ..SrdQueueState::surface(false)
         };
-        let error = build_evidence_srd_scene_submission_indices(&[packet], &profile).unwrap_err();
+        let error = build_srd_scene_submission_indices(&[state], &profile).unwrap_err();
         assert!(error.0.contains("matches no scene pass"));
     }
 
     #[test]
     fn scene_model_passes_keep_stable_insertion_and_ascending_range_order() {
-        let mut entries = [EvidenceScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
-        entries[0] = EvidenceScenePassRange::inclusive(1, 2);
-        entries[1] = EvidenceScenePassRange::inclusive(0, 0);
+        let mut entries = [ScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
+        entries[0] = ScenePassRange::inclusive(1, 2);
+        entries[1] = ScenePassRange::inclusive(0, 0);
 
-        let order = build_evidence_scene_model_submission_indices(&[2, 0, 2, 1], 3, &entries)
+        let order = build_scene_model_submission_indices(&[2, 0, 2, 1], 3, &entries)
             .expect("valid classified passes");
 
         assert_eq!(order, vec![3, 0, 2, 1]);
@@ -894,11 +896,11 @@ mod tests {
 
     #[test]
     fn overlapping_target_ranges_repeat_the_same_pass_records() {
-        let mut entries = [EvidenceScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
-        entries[0] = EvidenceScenePassRange::inclusive(2, 2);
-        entries[1] = EvidenceScenePassRange::inclusive(1, 2);
+        let mut entries = [ScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
+        entries[0] = ScenePassRange::inclusive(2, 2);
+        entries[1] = ScenePassRange::inclusive(1, 2);
 
-        let order = build_evidence_scene_model_submission_indices(&[2, 1, 2], 3, &entries)
+        let order = build_scene_model_submission_indices(&[2, 1, 2], 3, &entries)
             .expect("valid classified passes");
 
         assert_eq!(order, vec![0, 2, 1, 0, 2]);
@@ -906,12 +908,12 @@ mod tests {
 
     #[test]
     fn disabled_reversed_and_out_of_range_entry_passes_are_no_ops() {
-        let mut entries = [EvidenceScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
-        entries[0] = EvidenceScenePassRange::inclusive(2, 1);
-        entries[1] = EvidenceScenePassRange::inclusive(8, 12);
-        entries[2] = EvidenceScenePassRange::inclusive(1, 12);
+        let mut entries = [ScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
+        entries[0] = ScenePassRange::inclusive(2, 1);
+        entries[1] = ScenePassRange::inclusive(8, 12);
+        entries[2] = ScenePassRange::inclusive(1, 12);
 
-        let order = build_evidence_scene_model_submission_indices(&[0, 1, 2], 3, &entries)
+        let order = build_scene_model_submission_indices(&[0, 1, 2], 3, &entries)
             .expect("valid classified passes");
 
         assert_eq!(order, vec![1, 2]);
@@ -919,8 +921,8 @@ mod tests {
 
     #[test]
     fn invalid_classification_is_rejected_instead_of_being_guessed() {
-        let entries = [EvidenceScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
-        let error = build_evidence_scene_model_submission_indices(&[0, 3], 3, &entries)
+        let entries = [ScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
+        let error = build_scene_model_submission_indices(&[0, 3], 3, &entries)
             .expect_err("pass index equal to pass count must fail");
 
         assert!(error.0.contains("classified item 1 uses pass 3"));

@@ -1,8 +1,5 @@
 use crate::attribute::FontParamData;
 use crate::projection::{Matrix4x4, identity_matrix4x4_game, mul_matrix4x4_game};
-use crate::render::{
-    CeylonDrawPacketPresetState, CeylonRasterState, CeylonShaderKey, CeylonShaderKeyInput,
-};
 use crate::ruhuna::{RuhunaRuntimeFont, RuhunaRuntimeGlyphRecord};
 use crate::text::{TextDefinition, fennel_alignment_code_from_text_flags};
 
@@ -887,56 +884,6 @@ pub fn fennel_font_manager_set_e4_contains(code: u16) -> bool {
     FENNEL_FONT_MANAGER_SET_E4.binary_search(&code).is_ok()
 }
 
-/// DrawPacket state constructed at `sub_6CD8A0`, then changed by
-/// `teaFontRenderer` construction and `sub_7C7F90` for the default mode at
-/// renderer offset +0x330. The latter selects packet bit 25 and binds exactly
-/// one texture at packet +0x30.
-pub const FENNEL_DEFAULT_DRAW_FLAGS_00: u32 = 0x02AF_E003;
-pub const FENNEL_DEFAULT_FLAGS_60: u32 = 0x0000_4020;
-pub const FENNEL_VERTEX_FORMAT: u32 = 13;
-
-pub const fn fennel_default_draw_packet(is_2d: bool) -> CeylonDrawPacketPresetState {
-    CeylonDrawPacketPresetState {
-        draw_flags_00: FENNEL_DEFAULT_DRAW_FLAGS_00,
-        packed_08: 0,
-        flags_0c: 0,
-        field_2c: 0,
-        flags_58: 0xff,
-        flags_60: FENNEL_DEFAULT_FLAGS_60 | ((is_2d as u32) << 7),
-        flags_64: 0,
-    }
-}
-
-/// Reproduces the raster state that reaches a Fennel ShapeEnv draw before D3D9
-/// submission. The packet keeps the material-provided cull mode because bit
-/// `0x0080_0000` is set. The ShapeEnv material owns a freshly constructed
-/// `ceylon::resource::State`; its default `StateParam+0x08` low three bits are
-/// zero (`sub_E859B0`), and `sea_material_sync_render_commands` transfers those
-/// bits through `sub_E93530` to RenderState `+0x60`, i.e. internal cull zero.
-pub fn fennel_default_raster_state(is_2d: bool) -> CeylonRasterState {
-    let mut raster = CeylonRasterState {
-        cull_mode_internal: 0,
-        ..CeylonRasterState::default()
-    };
-    raster.apply_draw_packet(fennel_default_draw_packet(is_2d));
-    raster
-}
-
-/// Reproduces the ShapeEnv key formed by a normal one-atlas Fennel batch.
-/// `is_2d` is the explicit boolean copied by `sub_6DF020` to DrawPacket +0x60
-/// bit 7; it is supplied by the TextBox draw caller rather than inferred.
-pub fn fennel_default_shader_key(is_2d: bool) -> CeylonShaderKey {
-    CeylonShaderKeyInput {
-        draw_flags_00: FENNEL_DEFAULT_DRAW_FLAGS_00,
-        field_28: 31,
-        field_2c: 0,
-        flags_60: FENNEL_DEFAULT_FLAGS_60 | (u32::from(is_2d) << 7),
-        vertex_format_70: FENNEL_VERTEX_FORMAT,
-        texture_present: [true, false, false],
-    }
-    .shader_key()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FennelTextDecodeError {
     pub valid_prefix_len: usize,
@@ -1008,7 +955,7 @@ impl std::fmt::Display for UnsupportedFennelControl {
 
 impl std::error::Error for UnsupportedFennelControl {}
 
-/// Reproduces the evidence-complete plain-token subset of `sub_F3BD40`.
+/// Reproduces the supported plain-token subset of `sub_F3BD40`.
 ///
 /// Direct UTF-16 units produce type-zero glyph tokens. CRLF, CR, LF and the
 /// proven `$N`/`$n` aliases produce type-three newline tokens. `$$` produces a
@@ -1789,8 +1736,8 @@ pub struct FennelStaticUnclippedDrawInput {
     pub secondary_color: u32,
 }
 
-/// Evidence-complete normal-glyph inputs shared by the clipped and unclipped
-/// branches of `sub_7C7F90 -> sub_7C10B0`.
+/// Normal-glyph inputs shared by the supported clipped and unclipped branches
+/// of `sub_7C7F90 -> sub_7C10B0`.
 ///
 /// The runtime state source remains explicit: this type does not infer a mode
 /// from SRD properties or animation data. `textbox_flags` selects the branch
@@ -1873,7 +1820,7 @@ impl From<FennelTextureBatchRehashRequired> for FennelStaticUnclippedBatchError 
     }
 }
 
-/// Reproduces the evidence-complete normal-glyph portion of `sub_7C7F90` for
+/// Reproduces the supported normal-glyph portion of `sub_7C7F90` for
 /// the static mode-zero SrTextCast path, then calls the already-ported
 /// unclipped `sub_7C10B0` vertex builder in exact texture-batch order.
 ///
@@ -3486,59 +3433,6 @@ mod tests {
                 em_pixels_y: 12,
             }),
             _ => None,
-        }
-    }
-
-    #[test]
-    fn default_batch_shape_keys_and_simple_inputs_match_format_13() {
-        let three_d = fennel_default_shader_key(false);
-        let two_d = fennel_default_shader_key(true);
-        assert_eq!(fennel_default_draw_packet(false).encoded_preset_id(), 3);
-        assert_eq!(fennel_default_draw_packet(false).flags_60, 0x4020);
-        assert_eq!(fennel_default_draw_packet(true).flags_60, 0x40A0);
-        assert_eq!(fennel_default_draw_packet(false).flags_64, 0);
-        assert_eq!(fennel_default_draw_packet(true).flags_64, 0);
-        assert_eq!(three_d.low, 0x0036_BFB0);
-        assert_eq!(three_d.high, 0);
-        assert_eq!(two_d.low, 0x0036_BFB8);
-        assert_eq!(two_d.high, 0);
-        assert_eq!(
-            three_d
-                .srd_simple_shader_direct_contributions()
-                .unwrap()
-                .compact_key(),
-            *b"AAMAAABAABGAAAAAAA"
-        );
-        assert_eq!(
-            two_d
-                .srd_simple_shader_direct_contributions()
-                .unwrap()
-                .compact_key(),
-            *b"EAMAAABAABGAAAAAAA"
-        );
-
-        for (key, expects_2d) in [(three_d, false), (two_d, true)] {
-            let bits = key.srd_simple_shader_direct_contributions().unwrap();
-            assert!(!bits.contains(9));
-            assert!(bits.contains(10));
-            assert!(bits.contains(11));
-            assert!(!bits.contains(12));
-            assert!(bits.contains(36));
-            assert!(!bits.contains(37));
-            assert_eq!(bits.contains(2), expects_2d);
-        }
-    }
-
-    #[test]
-    fn default_shape_environment_material_preserves_clockwise_culling() {
-        for is_2d in [false, true] {
-            let raster = fennel_default_raster_state(is_2d);
-            assert_eq!(
-                raster.cull_mode(),
-                Some(crate::render::D3d9CullMode::Clockwise)
-            );
-            assert_eq!(raster.fill_mode(), crate::render::D3d9FillMode::Solid);
-            assert_eq!(raster.color_write_mask, 0x0f);
         }
     }
 

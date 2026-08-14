@@ -2,12 +2,9 @@ use std::fmt;
 
 use crate::camera::{build_look_at_rh_game, build_perspective_fov_rh_game};
 use crate::projection::{Matrix4x4, mul_matrix4x4_game};
-use crate::render::srd_renderer_layer_key_for_2d_layer;
-use crate::srd_draw::SrdHostDrawContext;
 use crate::target_pass::{
-    EVIDENCE_AIR_SCENE_BASE_PASSES, EvidenceBasePassProfile, EvidenceScenePassProfile,
-    EvidenceScenePassProfileError, EvidenceSrdType1TargetFilter, build_evidence_scene_pass_profile,
-    evidence_scene_target_dispatch_mask,
+    AIR_SCENE_BASE_PASSES, BasePassProfile, ScenePassProfile, ScenePassProfileError,
+    SrdType1TargetFilter, build_scene_pass_profile, scene_target_dispatch_mask,
 };
 use crate::transform::Affine3x4;
 
@@ -157,23 +154,77 @@ pub const CHUSAN_LINKED_VERSE_GATE_PLAYER: ChusanLinkedVerseGatePlayerProfile =
         layer_2d: 70,
     };
 
+/// Initial SrRenderer layer key constructed by the host before any player
+/// property overrides are applied.
+pub const SRD_RENDERER_INITIAL_LAYER_KEY: u32 = 0x0000_8580;
+
+/// Applies SrPlayer property 6 (`2DLayer`) to the host-owned layer key.
+pub const fn srd_renderer_layer_key_for_2d_layer(layer_2d: u8) -> u32 {
+    (SRD_RENDERER_INITIAL_LAYER_KEY & !0x7f00) | (((layer_2d as u32) << 8) & 0x7f00)
+}
+
+/// Camera target resolved from an SrPlayer's optional `TargetScene`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProjectTargetSnapshot {
+    pub projection_view: Matrix4x4,
+    pub render_size: [u32; 2],
+}
+
+impl ProjectTargetSnapshot {
+    pub const fn new(projection_view: Matrix4x4, render_size: [u32; 2]) -> Self {
+        Self {
+            projection_view,
+            render_size,
+        }
+    }
+}
+
+/// Immutable host and target state consumed while compiling one render plan.
+///
+/// There is deliberately no `Default`: an independent SRD does not identify a
+/// unique game target, camera, or scene-node placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldSnapshot {
+    pub first_calc_matrix: Affine3x4,
+    pub renderer_layer_key: u32,
+    pub project_target: Option<ProjectTargetSnapshot>,
+    pub target_projection_view: Matrix4x4,
+    pub target_screen_size: [u32; 2],
+}
+
+impl WorldSnapshot {
+    pub const fn new(
+        first_calc_matrix: Affine3x4,
+        renderer_layer_key: u32,
+        project_target: Option<ProjectTargetSnapshot>,
+        target_projection_view: Matrix4x4,
+        target_screen_size: [u32; 2],
+    ) -> Self {
+        Self {
+            first_calc_matrix,
+            renderer_layer_key,
+            project_target,
+            target_projection_view,
+            target_screen_size,
+        }
+    }
+}
+
 impl ChusanAirSceneTargetProfile {
     /// MainScene and BgScene both retain the five `PassBasic` objects installed
     /// by the common `air::Scene` constructor.
-    pub const fn base_passes(self) -> &'static [EvidenceBasePassProfile; 5] {
-        &EVIDENCE_AIR_SCENE_BASE_PASSES
+    pub const fn base_passes(self) -> &'static [BasePassProfile; 5] {
+        &AIR_SCENE_BASE_PASSES
     }
 
-    pub fn scene_pass_profile(
-        self,
-    ) -> Result<EvidenceScenePassProfile, EvidenceScenePassProfileError> {
-        build_evidence_scene_pass_profile(self.base_passes())
+    pub fn scene_pass_profile(self) -> Result<ScenePassProfile, ScenePassProfileError> {
+        build_scene_pass_profile(self.base_passes())
     }
 
     /// Scene virtual `+0x44` dispatch state immediately after Chusan's
     /// concrete MainScene/BgScene setup.
     pub const fn initial_dispatch_mask(self) -> Option<u32> {
-        evidence_scene_target_dispatch_mask(self.initial_enable, self.draw_index)
+        scene_target_dispatch_mask(self.initial_enable, self.draw_index)
     }
 
     /// Rebuilds the target Camera `Projection * View` used by the game after
@@ -204,8 +255,8 @@ impl ChusanAdvertiseLogoPlayerProfile {
     pub const fn initial_srd_target_filter(
         self,
         target: ChusanAirSceneTargetProfile,
-    ) -> EvidenceSrdType1TargetFilter {
-        EvidenceSrdType1TargetFilter {
+    ) -> SrdType1TargetFilter {
+        SrdType1TargetFilter {
             target_dispatch_mask: target.initial_dispatch_mask(),
             target_attribute: target.attribute,
             command_draw_mask: self.draw_mask,
@@ -224,7 +275,7 @@ impl ChusanAdvertiseLogoPlayerProfile {
         present_width: u32,
         present_height: u32,
         target_screen_size: [u32; 2],
-    ) -> Result<SrdHostDrawContext, GameHostProfileError> {
+    ) -> Result<WorldSnapshot, GameHostProfileError> {
         if target_screen_size.contains(&0) {
             return Err(GameHostProfileError(format!(
                 "{} target screen size must be non-zero, got {}x{}",
@@ -233,7 +284,7 @@ impl ChusanAdvertiseLogoPlayerProfile {
         }
         let target_projection_view =
             target.projection_view_for_present_size(present_width, present_height)?;
-        Ok(SrdHostDrawContext::new(
+        Ok(WorldSnapshot::new(
             Affine3x4::IDENTITY,
             srd_renderer_layer_key_for_2d_layer(self.layer_2d),
             None,
@@ -247,8 +298,8 @@ impl ChusanCommonBackgroundPlayerProfile {
     pub const fn initial_srd_target_filter(
         self,
         target: ChusanAirSceneTargetProfile,
-    ) -> EvidenceSrdType1TargetFilter {
-        EvidenceSrdType1TargetFilter {
+    ) -> SrdType1TargetFilter {
+        SrdType1TargetFilter {
             target_dispatch_mask: target.initial_dispatch_mask(),
             target_attribute: target.attribute,
             command_draw_mask: self.draw_mask,
@@ -266,7 +317,7 @@ impl ChusanCommonBackgroundPlayerProfile {
         present_width: u32,
         present_height: u32,
         target_screen_size: [u32; 2],
-    ) -> Result<SrdHostDrawContext, GameHostProfileError> {
+    ) -> Result<WorldSnapshot, GameHostProfileError> {
         if target_screen_size.contains(&0) {
             return Err(GameHostProfileError(format!(
                 "{} target screen size must be non-zero, got {}x{}",
@@ -275,7 +326,7 @@ impl ChusanCommonBackgroundPlayerProfile {
         }
         let target_projection_view =
             target.projection_view_for_present_size(present_width, present_height)?;
-        Ok(SrdHostDrawContext::new(
+        Ok(WorldSnapshot::new(
             Affine3x4::IDENTITY,
             srd_renderer_layer_key_for_2d_layer(self.layer_2d),
             None,
@@ -289,8 +340,8 @@ impl ChusanLinkedVerseGatePlayerProfile {
     pub const fn initial_srd_target_filter(
         self,
         target: ChusanAirSceneTargetProfile,
-    ) -> EvidenceSrdType1TargetFilter {
-        EvidenceSrdType1TargetFilter {
+    ) -> SrdType1TargetFilter {
+        SrdType1TargetFilter {
             target_dispatch_mask: target.initial_dispatch_mask(),
             target_attribute: target.attribute,
             command_draw_mask: self.draw_mask,
@@ -307,7 +358,7 @@ impl ChusanLinkedVerseGatePlayerProfile {
         present_width: u32,
         present_height: u32,
         target_screen_size: [u32; 2],
-    ) -> Result<SrdHostDrawContext, GameHostProfileError> {
+    ) -> Result<WorldSnapshot, GameHostProfileError> {
         if target_screen_size.contains(&0) {
             return Err(GameHostProfileError(format!(
                 "{} target screen size must be non-zero, got {}x{}",
@@ -316,7 +367,7 @@ impl ChusanLinkedVerseGatePlayerProfile {
         }
         let target_projection_view =
             target.projection_view_for_present_size(present_width, present_height)?;
-        Ok(SrdHostDrawContext::new(
+        Ok(WorldSnapshot::new(
             Affine3x4::IDENTITY,
             srd_renderer_layer_key_for_2d_layer(self.layer_2d),
             None,
@@ -410,16 +461,16 @@ mod tests {
 
     #[test]
     fn advertise_default_draw_mask_initially_admits_main_and_rejects_background() {
-        let packet = crate::render::CeylonDrawPacketPresetState::srd_renderer_initial();
+        let state = crate::target_pass::SrdQueueState::surface(false);
         assert!(
             CHUSAN_ADVERTISE_LOGO_PLAYER
                 .initial_srd_target_filter(CHUSAN_MAIN_SCENE)
-                .accepts(packet)
+                .accepts(state)
         );
         assert!(
             !CHUSAN_ADVERTISE_LOGO_PLAYER
                 .initial_srd_target_filter(CHUSAN_BG_SCENE)
-                .accepts(packet)
+                .accepts(state)
         );
     }
 
@@ -436,7 +487,7 @@ mod tests {
                 .projection_view_for_present_size(1080, 1920)
                 .unwrap()
         );
-        assert_eq!(context.renderer_project_target, None);
+        assert_eq!(context.project_target, None);
         assert_eq!(context.target_screen_size, [1920, 1080]);
     }
 
@@ -459,15 +510,16 @@ mod tests {
             .unwrap();
         assert_eq!(context.first_calc_matrix, Affine3x4::IDENTITY);
         assert_eq!(context.renderer_layer_key, 0x8680);
+        let state = crate::target_pass::SrdQueueState::surface(false);
         assert!(
             CHUSAN_COMMON_BACKGROUND_PLAYER
                 .initial_srd_target_filter(CHUSAN_MAIN_SCENE)
-                .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
+                .accepts(state)
         );
         assert!(
             !CHUSAN_COMMON_BACKGROUND_PLAYER
                 .initial_srd_target_filter(CHUSAN_BG_SCENE)
-                .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
+                .accepts(state)
         );
     }
 
@@ -491,16 +543,17 @@ mod tests {
             .unwrap();
         assert_eq!(context.first_calc_matrix, Affine3x4::IDENTITY);
         assert_eq!(context.renderer_layer_key, 0xC680);
-        assert_eq!(context.renderer_project_target, None);
+        assert_eq!(context.project_target, None);
+        let state = crate::target_pass::SrdQueueState::surface(false);
         assert!(
             CHUSAN_LINKED_VERSE_GATE_PLAYER
                 .initial_srd_target_filter(CHUSAN_MAIN_SCENE)
-                .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
+                .accepts(state)
         );
         assert!(
             !CHUSAN_LINKED_VERSE_GATE_PLAYER
                 .initial_srd_target_filter(CHUSAN_BG_SCENE)
-                .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
+                .accepts(state)
         );
     }
 }

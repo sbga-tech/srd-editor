@@ -1,12 +1,12 @@
 # 编辑器 D3D9Ex、HiDPI 与 Dear ImGui 后端
 
-> **历史实现记录。** 本页的 D3D9Ex device/readback 证据仍有效，但其中 Dear ImGui 前端与对应源码已由 `iced` 四面板编辑器替换。当前应用与 preview-adapter 边界见根目录 [`README.md`](../../README.md#editor-architecture)。
+> **历史实现记录。** 本页的 D3D9Ex device/readback 证据仍有效，但 Dear ImGui 前端、D3D9/DXVK preview backend、shader bytecode runtime 与对应源码都已删除。当前实现与 preview-adapter 边界见根目录 [`README.md`](../../README.md#editor-architecture)。
 
 本页记录编辑器基础设施的实际实现和验证边界。它不作为 Surfride 游戏渲染语义的证据；游戏侧的顶点、状态、shader 和资源结论仍必须分别由二进制调用链闭环。
 
 ## 架构与依赖边界
 
-编辑器按 Rust 构建宿主机的原生指令集发布，不绑定原游戏的 32 位 x86 ABI。当前 preview renderer 通过 `windows-rs` 使用 D3D9 COM ABI，但 provider 由 [`renderer/d3d9/dxvk.rs`](../../src/renderer/d3d9/dxvk.rs) 通过 `libloading` 显式提供，不静默绑定系统 `d3d9.dll`：
+该历史实现按 Rust 构建宿主机的原生指令集发布，不绑定原游戏的 32 位 x86 ABI，并通过 `windows-rs` 使用 D3D9 COM ABI。provider 由 `libloading` 显式提供，不静默绑定系统 `d3d9.dll`：
 
 - Windows 加载官方 DXVK package 的 `d3d9.dll`，以 desktop `HWND` 创建 device；
 - Linux 加载官方 DXVK Native `libdxvk_d3d9.so.0.30002`，以主线程创建的隐藏 SDL3 Vulkan window 作为 WSI handle；
@@ -16,9 +16,9 @@
 - `D3DFMT_D24S8` 自动 depth/stencil；
 - `D3DPRESENT_INTERVAL_ONE`。
 
-运行时不链接、不加载也不调用 D3DX 或 NVIDIA Cg。Cg 仅存在于隔离的离线 shader 取证流程中，详见 [`render-shader-bytecode.md`](render-shader-bytecode.md)。DXVK runtime 的固定版本、校验和、discovery order、Linux SDL3 依赖与平台失败策略见根目录 [`README.md`](../../README.md#dxvk-runtime)。
+该 runtime 不链接、不加载也不调用 D3DX 或 NVIDIA Cg。Cg 仅存在于隔离的离线 shader 取证流程中，详见 [`render-shader-bytecode.md`](render-shader-bytecode.md)。
 
-初始化还会把首个证据闭环 fixture 的嵌入式 `vs_3_0/ps_3_0` token 直接交给同一个 `IDirect3DDevice9Ex::CreateVertexShader/CreatePixelShader`。创建失败由 preview adapter 边界报告为 unavailable error；不会降级到 CPU，也不会伪装成 reference-accurate output。
+初始化还会把首个证据闭环 fixture 的嵌入式 `vs_3_0/ps_3_0` token 直接交给 `IDirect3DDevice9Ex::CreateVertexShader/CreatePixelShader`。创建失败由 preview adapter 边界报告为 unavailable error；不会降级到 CPU，也不会伪装成 reference-accurate output。
 
 ## Dear ImGui renderer
 

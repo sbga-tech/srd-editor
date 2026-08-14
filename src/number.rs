@@ -4,7 +4,6 @@ use crate::csli::CrefEntry;
 use crate::image::{
     ImageCoordinateState, ImageDefinition, ImageReferenceChannel, ResolvedImageCoordinates,
 };
-use crate::render::SrdQuadDraw;
 use crate::vtbf::{Block, Property, SrdFile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,26 +559,6 @@ impl NumberDefinition {
         state
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn build_glyph_render_quad(
-        &self,
-        glyph_quad: NumberGlyphQuad,
-        color_state: ImageCoordinateState,
-        first_coordinates: ResolvedImageCoordinates,
-        second_coordinates: ResolvedImageCoordinates,
-        multiplicative_tint: [u8; 4],
-        additive_tint: [u8; 4],
-    ) -> SrdQuadDraw {
-        self.image_base().build_render_quad_from_positions(
-            glyph_quad.positions,
-            color_state,
-            first_coordinates,
-            second_coordinates,
-            multiplicative_tint,
-            additive_tint,
-        )
-    }
-
     #[allow(clippy::assign_op_pattern)]
     pub fn measure_string_width(&self, text: &[u8]) -> f32 {
         let mut width = 0.0f32;
@@ -1058,35 +1037,6 @@ mod tests {
                 .reference_index,
             0
         );
-
-        let first = ResolvedImageCoordinates {
-            image_index: 0,
-            coordinates: [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
-            selected_sampler: None,
-        };
-        let second = ResolvedImageCoordinates {
-            image_index: 1,
-            coordinates: [[0.2, 0.3]; 4],
-            selected_sampler: None,
-        };
-        let glyph_quad = NumberGlyphQuad {
-            positions: [[1.0, 2.0, 3.0]; 4],
-        };
-        let draw = definition.build_glyph_render_quad(
-            glyph_quad,
-            base.initial_coordinate_state(ImageReferenceChannel::Cref),
-            first,
-            second,
-            [255; 4],
-            [100, 150, 200, 128],
-        );
-        assert_eq!(draw.vertices[0].position, glyph_quad.positions[0]);
-        assert_eq!(
-            draw.vertices[0].texture_coordinates,
-            [[0.0, 0.0], [0.2, 0.3]]
-        );
-        assert_eq!(draw.vertices[0].primary_color, [255; 4]);
-        assert_eq!(draw.vertices[0].secondary_color, [50, 75, 100, 0]);
     }
 
     #[test]

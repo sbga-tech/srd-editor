@@ -1,42 +1,31 @@
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::mem;
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::slice;
 
-use crate::fennel::{
-    FennelRenderVertex, fennel_default_draw_packet, fennel_default_raster_state,
-    fennel_default_shader_key,
-};
-use crate::render::{
-    CeylonAlphaStencilState, CeylonDepthState, CeylonRasterState, CeylonSrdFixedShaderConstants,
-    D3d9BlendFactor, D3d9BlendOperation, D3d9ComparisonFunction, D3d9CullMode, D3d9FillMode,
-    D3d9StencilOperation, SrdD3d9BlendPreset, SrdRenderVertex, ceylon_d3d9_blend_preset,
-};
-use crate::renderer::assets::{FennelAtlasSourceSet, SrdTextureSourceSet};
+use crate::fennel::FennelRenderVertex;
 use crate::renderer::backend::{
-    CompositionReadback, FennelAtlasHandle, FennelRenderBatch, RenderBackendError,
-    SrdExternalRenderState, SrdRenderBackend, SrdTextureSetHandle,
+    CompositionReadback, FennelAtlasHandle, RenderBackendError, ScissorRect, SimpleDraw,
+    SimpleTextureSource, SimpleVertices, SrdExternalRenderState, SrdRenderBackend,
+    SrdTextureSetHandle,
 };
-use crate::ruhuna::RuhunaD3d9SamplerState;
-use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
-use crate::srd_draw::{EvidenceCompleteSrdDraw, EvidenceSrdTextureBinding};
+use crate::renderer::pipeline::{
+    BlendComponent, BlendFactor, BlendOperation, CompareFunction, CullMode, DepthState,
+    DrawTopology, FillMode, RasterState, SimpleShaderProgram, SimpleVertexLayout, SrdDrawState,
+    SrdTextureBinding, SrdVertex, StencilOperation, StencilState,
+};
+use crate::renderer::resources::{FennelAtlasSourceSet, SrdTextureSourceSet};
+use crate::ruhuna::RuhunaSamplerState;
 use crate::texture::{TextureAddressMode, TextureFilter, TextureSamplerState};
 
-use super::shaders::{
-    WgpuShaderPair, WgpuVertexInput, WgpuVertexSemantic, embedded_wgpu_shader_pair,
-    pixel_source_with_alpha_test, pixel_source_with_sampler_biases, pixel_sources,
-    vertex_source_with_d3d_color_swizzle, vertex_sources,
-};
 use super::texture::{WgpuFennelAtlas, WgpuTexture2d, WgpuTextureSet};
-
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_STENCIL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
-const VERTEX_UNIFORM_SIZE: u64 = 256 * 16;
-const PIXEL_UNIFORM_SIZE: u64 = 224 * 16;
-const UNIFORM_DRAW_SIZE: u64 = VERTEX_UNIFORM_SIZE + PIXEL_UNIFORM_SIZE;
+const DRAW_UNIFORM_SIZE: u64 = mem::size_of::<DrawUniforms>() as u64;
 const GPU_ARENA_CHUNK_SIZE: u64 = 2 * 1024 * 1024;
+
+const SIMPLE_SHADER: &str = include_str!("shaders/simple.wgsl");
 
 pub struct WgpuSrdRenderBackend {
     device: wgpu::Device,
@@ -45,8 +34,11 @@ pub struct WgpuSrdRenderBackend {
     enabled_features: wgpu::Features,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    simple_shader: wgpu::ShaderModule,
+    backdrop_sampler: wgpu::Sampler,
     pipelines: BTreeMap<PipelineKey, wgpu::RenderPipeline>,
     samplers: BTreeMap<SamplerKey, wgpu::Sampler>,
+    bind_groups: BTreeMap<BindGroupKey, wgpu::BindGroup>,
     fallback_texture: WgpuTexture2d,
     texture_sets: BTreeMap<SrdTextureSetHandle, WgpuTextureSet>,
     fennel_atlases: BTreeMap<FennelAtlasHandle, WgpuFennelAtlas>,
@@ -54,14 +46,17 @@ pub struct WgpuSrdRenderBackend {
     next_fennel_atlas: u64,
     composition: Option<CompositionTarget>,
     encoder: Option<wgpu::CommandEncoder>,
+    clear_color: Option<wgpu::Color>,
+    pending_draws: Vec<PendingDraw>,
     uniform_arena: GpuArena,
     vertex_arena: GpuArena,
 }
 
 struct CompositionTarget {
-    #[allow(dead_code)]
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
+    backdrop: wgpu::Texture,
+    backdrop_view: wgpu::TextureView,
     #[allow(dead_code)]
     depth_stencil: wgpu::Texture,
     depth_stencil_view: wgpu::TextureView,
@@ -81,71 +76,43 @@ struct GpuArenaChunk {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum InputLayout {
-    Srd,
-    Fennel,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum DrawTopology {
-    TriangleStrip,
-    TriangleList,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct PipelineKey {
-    shader_key: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH],
-    input_layout: InputLayout,
+    program: SimpleShaderProgram,
+    vertex_layout: SimpleVertexLayout,
     topology: DrawTopology,
-    sampler_bias_bits: [u32; 2],
-    alpha_comparison: u32,
-    alpha_reference: u8,
-    blend_enabled: bool,
-    source_blend: u32,
-    destination_blend: u32,
-    blend_operation: u32,
-    separate_alpha_blend: bool,
-    source_blend_alpha: u32,
-    destination_blend_alpha: u32,
-    blend_operation_alpha: u32,
-    cull_mode: u32,
-    fill_mode: u32,
-    color_write_mask: u32,
-    depth_enabled: bool,
-    depth_write_enabled: bool,
-    depth_comparison: u32,
-    stencil_enabled: bool,
-    stencil_comparison: u32,
-    stencil_fail: u32,
-    stencil_depth_fail: u32,
-    stencil_pass: u32,
-    stencil_read_mask: u32,
-    stencil_write_mask: u32,
-    depth_bias: i32,
+    blend: crate::renderer::pipeline::BlendState,
+    raster: RasterState,
+    depth: DepthState,
+    stencil: StencilState,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PipelineSpec {
-    key: PipelineKey,
-    blend: SrdD3d9BlendPreset,
-    raster: CeylonRasterState,
-    depth: CeylonDepthState,
-    alpha_stencil: CeylonAlphaStencilState,
+impl PipelineKey {
+    fn from_state(state: SrdDrawState, topology: DrawTopology) -> Self {
+        Self {
+            program: state.profile.program(),
+            vertex_layout: state.profile.vertex_layout,
+            topology,
+            blend: state.pipeline.blend,
+            raster: state.pipeline.raster,
+            depth: state.pipeline.depth,
+            stencil: state.pipeline.stencil,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct SamplerKey {
-    address_u: u32,
-    address_v: u32,
-    min_filter: u32,
-    mag_filter: u32,
-    mip_filter: u32,
+    address_u: TextureAddressMode,
+    address_v: TextureAddressMode,
+    min_filter: TextureFilter,
+    mag_filter: TextureFilter,
+    mip_filter: TextureFilter,
     lod_min_bits: u32,
     lod_max_bits: u32,
     anisotropy: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TextureSelection {
     Fallback,
     Srd {
@@ -158,10 +125,106 @@ enum TextureSelection {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct DrawTextureBinding {
     texture: TextureSelection,
     sampler: SamplerKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct BindGroupKey {
+    uniform_chunk: usize,
+    bindings: [DrawTextureBinding; 2],
+}
+
+struct PreparedDraw<'a> {
+    state: SrdDrawState,
+    topology: DrawTopology,
+    vertex_bytes: &'a [u8],
+    vertex_count: usize,
+    bindings: [DrawTextureBinding; 2],
+    sampler_biases: [f32; 2],
+    external: SrdExternalRenderState,
+}
+
+/// GPU resources and dynamic state for one draw in the composition's single
+/// ordinary render pass. Pipelines, samplers, bind groups, uniforms, and
+/// vertices are all prepared before the pass starts.
+struct PendingDraw {
+    pipeline: PipelineKey,
+    bind_group: BindGroupKey,
+    dynamic_offset: u32,
+    vertex_chunk: usize,
+    vertex_range: Range<u64>,
+    vertex_count: u32,
+    scissor: [u32; 4],
+    stencil_reference: u32,
+    requires_backdrop: bool,
+}
+
+fn target_color_segments(
+    requires_backdrop: impl ExactSizeIterator<Item = bool>,
+) -> impl Iterator<Item = Range<usize>> {
+    let draw_count = requires_backdrop.len();
+    requires_backdrop
+        .enumerate()
+        .filter_map(|(index, requires_backdrop)| requires_backdrop.then_some(index))
+        .chain(std::iter::once(draw_count))
+        .scan(0, |start, end| {
+            let range = *start..end;
+            *start = end;
+            Some(range)
+        })
+}
+
+/// Original Ceylon constant groups plus host-only fragment inputs. Profile
+/// features are pipeline constants, never per-draw shader branches.
+#[repr(C, align(16))]
+struct DrawUniforms {
+    /// Original SimpleShader `mtxWorld`, column-major for WGSL.
+    world: [[f32; 4]; 4],
+    /// Original SimpleShader `mtxPrjView`, column-major for WGSL.
+    projection_view: [[f32; 4]; 4],
+    /// `screenParam.xy`, followed by composition target dimensions.
+    screen_target: [f32; 4],
+    /// Sampler LOD biases, alpha reference, alpha comparison.
+    params: [f32; 4],
+}
+
+impl DrawUniforms {
+    fn from_draw(state: SrdDrawState, sampler_biases: [f32; 2], target_size: [u32; 2]) -> Self {
+        let (alpha_comparison, alpha_reference) = match state.pipeline.alpha_test {
+            Some(alpha) => (alpha.comparison as u32, alpha.reference),
+            None => (CompareFunction::Always as u32, 0),
+        };
+        Self {
+            world: matrix_columns(state.transform.world),
+            projection_view: matrix_columns(state.transform.projection_view),
+            screen_target: [
+                state.transform.screen_param[0],
+                state.transform.screen_param[1],
+                target_size[0] as f32,
+                target_size[1] as f32,
+            ],
+            params: [
+                sampler_biases[0],
+                sampler_biases[1],
+                alpha_reference as f32,
+                alpha_comparison as f32,
+            ],
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: DrawUniforms is repr(C), contains only plain numeric arrays, and
+        // the returned bytes cannot outlive this value.
+        unsafe {
+            slice::from_raw_parts(
+                (self as *const DrawUniforms).cast::<u8>(),
+                mem::size_of::<DrawUniforms>(),
+            )
+        }
+    }
 }
 
 impl WgpuSrdRenderBackend {
@@ -192,16 +255,9 @@ impl WgpuSrdRenderBackend {
                 ))
             })?;
         let adapter_features = adapter.features();
-        if !adapter_features.contains(wgpu::Features::SHADER_F16) {
-            let info = adapter.get_info();
-            return Err(RenderBackendError(format!(
-                "WebGPU adapter {} ({:?}) cannot run the translated Ceylon shaders because SHADER_F16 is unavailable",
-                info.name, info.backend
-            )));
-        }
         let optional_features =
             wgpu::Features::POLYGON_MODE_LINE | wgpu::Features::POLYGON_MODE_POINT;
-        let enabled_features = wgpu::Features::SHADER_F16 | (adapter_features & optional_features);
+        let enabled_features = adapter_features & optional_features;
         let info = adapter.get_info();
         let adapter_diagnostics = format!("{} / {:?}", info.name, info.backend);
         let (device, queue) = adapter
@@ -220,14 +276,43 @@ impl WgpuSrdRenderBackend {
                 ))
             })?;
 
-        validate_embedded_shader_modules(&device)?;
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let simple_shader = create_shader(&device, "SRD Ceylon SimpleShader", SIMPLE_SHADER);
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|error| {
+                RenderBackendError(format!("WebGPU shader validation wait failed: {error}"))
+            })?;
+        if let Some(error) = device.pop_error_scope().await {
+            return Err(RenderBackendError(format!(
+                "native WebGPU shader validation failed: {error}"
+            )));
+        }
+
         let bind_group_layout = create_bind_group_layout(&device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Ceylon WebGPU pipeline layout"),
+            label: Some("SRD native pipeline layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
         let fallback_texture = WgpuTexture2d::opaque_black(&device, &queue);
+        let backdrop_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("SRD target-color sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: 0.0,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
 
         Ok(Self {
             device,
@@ -236,8 +321,11 @@ impl WgpuSrdRenderBackend {
             enabled_features,
             bind_group_layout,
             pipeline_layout,
+            simple_shader,
+            backdrop_sampler,
             pipelines: BTreeMap::new(),
             samplers: BTreeMap::new(),
+            bind_groups: BTreeMap::new(),
             fallback_texture,
             texture_sets: BTreeMap::new(),
             fennel_atlases: BTreeMap::new(),
@@ -245,13 +333,15 @@ impl WgpuSrdRenderBackend {
             next_fennel_atlas: 1,
             composition: None,
             encoder: None,
+            clear_color: None,
+            pending_draws: Vec::new(),
             uniform_arena: GpuArena::new(
                 wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                "Ceylon WebGPU uniform arena",
+                "SRD native uniform arena",
             ),
             vertex_arena: GpuArena::new(
                 wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                "Ceylon WebGPU vertex arena",
+                "SRD native vertex arena",
             ),
         })
     }
@@ -261,328 +351,231 @@ impl WgpuSrdRenderBackend {
     }
 
     pub fn release_srd_textures(&mut self, handle: SrdTextureSetHandle) {
+        self.bind_groups.retain(|key, _| {
+            !key.bindings.iter().any(|binding| {
+                matches!(binding.texture, TextureSelection::Srd { handle: bound, .. } if bound == handle)
+            })
+        });
         self.texture_sets.remove(&handle);
     }
 
     pub fn release_fennel_atlas(&mut self, handle: FennelAtlasHandle) {
+        self.bind_groups.retain(|key, _| {
+            !key.bindings.iter().any(|binding| {
+                matches!(binding.texture, TextureSelection::Fennel { handle: bound, .. } if bound == handle)
+            })
+        });
         self.fennel_atlases.remove(&handle);
     }
 
-    fn render_srd_vertices(
-        &mut self,
-        draw: &EvidenceCompleteSrdDraw,
-        vertices: &[SrdRenderVertex],
-        external: SrdExternalRenderState,
-        textures: Option<SrdTextureSetHandle>,
-    ) -> Result<(), RenderBackendError> {
-        if vertices.len() < 3 {
-            return Err(RenderBackendError(
-                "WebGPU SRD triangle strip has fewer than three vertices".into(),
-            ));
+    fn prepare_simple_draw<'a>(
+        &self,
+        draw: SimpleDraw<'a>,
+    ) -> Result<PreparedDraw<'a>, RenderBackendError> {
+        match (draw.topology, draw.vertices, draw.textures) {
+            (
+                DrawTopology::TriangleStrip,
+                SimpleVertices::Format14(vertices),
+                SimpleTextureSource::Srd(textures),
+            ) => {
+                if vertices.len() < 3 {
+                    return Err(RenderBackendError(
+                        "WebGPU format-14 triangle strip needs at least three vertices".into(),
+                    ));
+                }
+                debug_assert_eq!(mem::size_of::<SrdVertex>(), SrdVertex::STRIDE);
+                let byte_len = vertices
+                    .len()
+                    .checked_mul(SrdVertex::STRIDE)
+                    .ok_or_else(|| {
+                        RenderBackendError("WebGPU format-14 vertex upload size overflow".into())
+                    })?;
+                // SAFETY: SrdVertex is repr(C), its asserted stride covers every byte,
+                // and this byte slice is bounded by the source vertex slice.
+                let vertex_bytes =
+                    unsafe { slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), byte_len) };
+                let bindings = self.resolve_srd_textures(draw.state.material.textures, textures)?;
+                Ok(PreparedDraw {
+                    state: draw.state,
+                    topology: draw.topology,
+                    vertex_bytes,
+                    vertex_count: vertices.len(),
+                    bindings,
+                    sampler_biases: [0.0; 2],
+                    external: draw.external,
+                })
+            }
+            (
+                DrawTopology::TriangleList,
+                SimpleVertices::Format13(vertices),
+                SimpleTextureSource::Fennel { atlas, page_index },
+            ) => {
+                if vertices.len() < 3 || !vertices.len().is_multiple_of(3) {
+                    return Err(RenderBackendError(format!(
+                        "WebGPU format-13 triangle list has invalid vertex count {}",
+                        vertices.len()
+                    )));
+                }
+                let atlas_resource = self.fennel_atlases.get(&atlas).ok_or_else(|| {
+                    RenderBackendError(format!(
+                        "WebGPU Fennel atlas handle {atlas:?} is not loaded"
+                    ))
+                })?;
+                if atlas_resource.get(page_index).is_none() {
+                    return Err(RenderBackendError(format!(
+                        "WebGPU Fennel atlas page {page_index} is not loaded"
+                    )));
+                }
+                let atlas_sampler = atlas_resource.sampler();
+                let bindings = [
+                    DrawTextureBinding {
+                        texture: TextureSelection::Fennel {
+                            handle: atlas,
+                            page: page_index,
+                        },
+                        sampler: SamplerKey::from_fennel(atlas_sampler),
+                    },
+                    DrawTextureBinding {
+                        texture: TextureSelection::Fallback,
+                        sampler: SamplerKey::fallback(),
+                    },
+                ];
+                debug_assert_eq!(
+                    mem::size_of::<FennelRenderVertex>(),
+                    FennelRenderVertex::STRIDE
+                );
+                let byte_len = vertices
+                    .len()
+                    .checked_mul(FennelRenderVertex::STRIDE)
+                    .ok_or_else(|| {
+                        RenderBackendError("WebGPU format-13 vertex upload size overflow".into())
+                    })?;
+                // SAFETY: FennelRenderVertex is repr(C), its asserted stride covers every
+                // byte, and this byte slice is bounded by the source vertex slice.
+                let vertex_bytes =
+                    unsafe { slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), byte_len) };
+                Ok(PreparedDraw {
+                    state: draw.state,
+                    topology: draw.topology,
+                    vertex_bytes,
+                    vertex_count: vertices.len(),
+                    bindings,
+                    sampler_biases: [f32::from_bits(atlas_sampler.mip_lod_bias_bits), 0.0],
+                    external: draw.external,
+                })
+            }
+            _ => Err(RenderBackendError(
+                "SimpleShader topology, vertex layout, and texture source do not match".into(),
+            )),
         }
-        debug_assert_eq!(mem::size_of::<SrdRenderVertex>(), SrdRenderVertex::STRIDE);
-        let byte_len = vertices
-            .len()
-            .checked_mul(SrdRenderVertex::STRIDE)
-            .ok_or_else(|| RenderBackendError("WebGPU SRD vertex upload size overflow".into()))?;
-        // SAFETY: SrdRenderVertex is repr(C), its asserted stride includes every byte, and
-        // the slice cannot outlive the source vertices.
-        let bytes = unsafe { slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), byte_len) };
-
-        let mut alpha_stencil = external.alpha_stencil;
-        alpha_stencil.alpha_test_enabled = draw.blend.alpha_test_enabled;
-        alpha_stencil.apply_draw_packet(draw.packet);
-        let spec = PipelineSpec::new(
-            draw.shader_key,
-            InputLayout::Srd,
-            DrawTopology::TriangleStrip,
-            [0, 0],
-            draw.blend,
-            draw.raster,
-            draw.depth,
-            alpha_stencil,
-            draw.packet.field_2c.saturating_neg(),
-        )?;
-        let bindings = self.resolve_srd_textures(draw.texture_bindings, textures)?;
-        self.submit_draw(
-            spec,
-            bytes,
-            vertices.len(),
-            draw.fixed_constants,
-            draw.is_2d,
-            bindings,
-            external,
-        )
     }
 
-    fn render_fennel_batch(
-        &mut self,
-        batch: &FennelRenderBatch<'_>,
-        external: SrdExternalRenderState,
-        atlas_handle: FennelAtlasHandle,
-    ) -> Result<(), RenderBackendError> {
-        if batch.vertices.is_empty() {
-            return Ok(());
-        }
-        if batch.vertices.len() % 6 != 0 {
-            return Err(RenderBackendError(
-                "WebGPU Fennel batch vertex count is not a multiple of six".into(),
-            ));
-        }
-        let sampler = self
-            .fennel_atlases
-            .get(&atlas_handle)
+    fn submit_draw(&mut self, draw: PreparedDraw<'_>) -> Result<(), RenderBackendError> {
+        let composition_size = self
+            .composition
+            .as_ref()
             .ok_or_else(|| {
-                RenderBackendError(format!(
-                    "WebGPU Fennel atlas handle {atlas_handle:?} is not loaded"
-                ))
+                RenderBackendError("WebGPU composition target is not configured".into())
             })?
-            .sampler();
-        if self
-            .fennel_atlases
-            .get(&atlas_handle)
-            .and_then(|atlas| atlas.get(batch.page_index))
-            .is_none()
-        {
-            return Err(RenderBackendError(format!(
-                "WebGPU Fennel atlas page {} is not loaded",
-                batch.page_index
-            )));
-        }
-
-        let shader_key = fennel_default_shader_key(batch.is_2d)
-            .srd_simple_shader_direct_contributions()
-            .map(|bits| bits.compact_key())
-            .map_err(|error| {
-                RenderBackendError(format!("unsupported WebGPU Fennel shader key: {error:?}"))
-            })?;
-        let packet = fennel_default_draw_packet(batch.is_2d);
-        let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
-        let raster = fennel_default_raster_state(batch.is_2d);
-        let depth = CeylonDepthState::from_draw_flags(packet.draw_flags_00);
-        let mut alpha_stencil = external.alpha_stencil;
-        alpha_stencil.alpha_test_enabled = blend.alpha_test_enabled;
-        alpha_stencil.apply_draw_packet(packet);
-        let spec = PipelineSpec::new(
-            shader_key,
-            InputLayout::Fennel,
-            DrawTopology::TriangleList,
-            [sampler.mip_lod_bias_bits, 0],
-            blend,
-            raster,
-            depth,
-            alpha_stencil,
-            packet.field_2c.saturating_neg(),
-        )?;
-        let sampler_key = SamplerKey::from_fennel(sampler);
-        self.ensure_sampler(sampler_key)?;
-        let fallback_sampler = SamplerKey::fallback();
-        self.ensure_sampler(fallback_sampler)?;
-        let bindings = [
-            DrawTextureBinding {
-                texture: TextureSelection::Fennel {
-                    handle: atlas_handle,
-                    page: batch.page_index,
-                },
-                sampler: sampler_key,
-            },
-            DrawTextureBinding {
-                texture: TextureSelection::Fallback,
-                sampler: fallback_sampler,
-            },
-        ];
-
-        debug_assert_eq!(
-            mem::size_of::<FennelRenderVertex>(),
-            FennelRenderVertex::STRIDE
-        );
-        let byte_len = batch
-            .vertices
-            .len()
-            .checked_mul(FennelRenderVertex::STRIDE)
-            .ok_or_else(|| {
-                RenderBackendError("WebGPU Fennel vertex upload size overflow".into())
-            })?;
-        // SAFETY: FennelRenderVertex is repr(C), its asserted stride includes every byte,
-        // and the slice cannot outlive the source vertices.
-        let bytes =
-            unsafe { slice::from_raw_parts(batch.vertices.as_ptr().cast::<u8>(), byte_len) };
-        self.submit_draw(
-            spec,
-            bytes,
-            batch.vertices.len(),
-            batch.fixed_constants,
-            batch.is_2d,
-            bindings,
-            external,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn submit_draw(
-        &mut self,
-        spec: PipelineSpec,
-        vertex_bytes: &[u8],
-        vertex_count: usize,
-        constants: CeylonSrdFixedShaderConstants,
-        is_2d: bool,
-        bindings: [DrawTextureBinding; 2],
-        external: SrdExternalRenderState,
-    ) -> Result<(), RenderBackendError> {
-        let composition = self.composition.as_ref().ok_or_else(|| {
-            RenderBackendError("WebGPU composition target is not configured".into())
-        })?;
+            .size;
         if self.encoder.is_none() {
             return Err(RenderBackendError(
                 "WebGPU draw was submitted outside a composition pass".into(),
             ));
         }
-        let Some(scissor) = resolve_scissor(external, composition.size)? else {
+        let Some(scissor) = resolve_scissor(draw.external.scissor, composition_size)? else {
             return Ok(());
         };
-
-        self.ensure_pipeline(spec)?;
-        for binding in bindings {
+        let pipeline = PipelineKey::from_state(draw.state, draw.topology);
+        self.ensure_pipeline(pipeline)?;
+        for binding in draw.bindings {
             self.ensure_sampler(binding.sampler)?;
         }
 
         let uniform_allocation =
             self.uniform_arena
-                .allocate(&self.device, UNIFORM_DRAW_SIZE, 256)?;
-        let vertex_allocation =
-            self.vertex_arena
-                .allocate(&self.device, vertex_bytes.len() as u64, 4)?;
-        let (vertex_constants, pixel_constants) = serialize_constants(constants, is_2d);
+                .allocate(&self.device, DRAW_UNIFORM_SIZE, 256)?;
+        let vertex_allocation = self.vertex_arena.allocate(
+            &self.device,
+            u64::try_from(draw.vertex_bytes.len())
+                .map_err(|_| RenderBackendError("WebGPU vertex byte count exceeds u64".into()))?,
+            4,
+        )?;
+        let uniforms = DrawUniforms::from_draw(draw.state, draw.sampler_biases, composition_size);
         let uniform_chunk = &self.uniform_arena.chunks[uniform_allocation.chunk];
         self.queue.write_buffer(
             &uniform_chunk.buffer,
             uniform_allocation.range.start,
-            &vertex_constants,
+            uniforms.as_bytes(),
         );
         self.queue.write_buffer(
-            &uniform_chunk.buffer,
-            uniform_allocation.range.start + VERTEX_UNIFORM_SIZE,
-            &pixel_constants,
-        );
-        let vertex_chunk = &self.vertex_arena.chunks[vertex_allocation.chunk];
-        self.queue.write_buffer(
-            &vertex_chunk.buffer,
+            &self.vertex_arena.chunks[vertex_allocation.chunk].buffer,
             vertex_allocation.range.start,
-            vertex_bytes,
+            draw.vertex_bytes,
         );
 
-        let bind_group = self.create_bind_group(uniform_allocation.chunk, bindings)?;
-        let pipeline = self
-            .pipelines
-            .get(&spec.key)
-            .expect("pipeline was inserted by ensure_pipeline");
-        let composition = self
-            .composition
-            .as_ref()
-            .expect("composition was checked above");
-        let encoder = self.encoder.as_mut().expect("encoder was checked above");
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Ceylon WebGPU draw"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &composition.color_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &composition.depth_stencil_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(
-            0,
-            &bind_group,
-            &[
-                u32::try_from(uniform_allocation.range.start).map_err(|_| {
-                    RenderBackendError("WebGPU vertex uniform offset exceeds u32".into())
-                })?,
-                u32::try_from(uniform_allocation.range.start + VERTEX_UNIFORM_SIZE).map_err(
-                    |_| RenderBackendError("WebGPU pixel uniform offset exceeds u32".into()),
-                )?,
-            ],
-        );
-        pass.set_vertex_buffer(0, vertex_chunk.buffer.slice(vertex_allocation.range));
-        pass.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
-        pass.set_stencil_reference(spec.alpha_stencil.stencil_reference);
-        pass.set_blend_constant(wgpu::Color::WHITE);
-        pass.draw(
-            0..u32::try_from(vertex_count)
+        let bind_group = BindGroupKey {
+            uniform_chunk: uniform_allocation.chunk,
+            bindings: draw.bindings,
+        };
+        self.ensure_bind_group(bind_group)?;
+        self.pending_draws.push(PendingDraw {
+            pipeline,
+            bind_group,
+            dynamic_offset: u32::try_from(uniform_allocation.range.start)
+                .map_err(|_| RenderBackendError("WebGPU uniform offset exceeds u32".into()))?,
+            vertex_chunk: vertex_allocation.chunk,
+            vertex_range: vertex_allocation.range,
+            vertex_count: u32::try_from(draw.vertex_count)
                 .map_err(|_| RenderBackendError("WebGPU vertex count exceeds u32".into()))?,
-            0..1,
-        );
+            scissor,
+            stencil_reference: u32::from(draw.state.pipeline.stencil.reference),
+            requires_backdrop: draw.state.profile.requires_backdrop(),
+        });
         Ok(())
     }
 
     fn resolve_srd_textures(
-        &mut self,
-        source_bindings: [Option<EvidenceSrdTextureBinding>; 3],
+        &self,
+        source_bindings: [Option<SrdTextureBinding>; 3],
         handle: Option<SrdTextureSetHandle>,
     ) -> Result<[DrawTextureBinding; 2], RenderBackendError> {
         if let Some(binding) = source_bindings[2] {
             return Err(RenderBackendError(format!(
-                "WebGPU translated Ceylon shaders expose two texture slots, but SRD texture {} is bound to slot 2",
+                "native surface shader exposes two texture slots, but texture {} is bound to slot 2",
                 binding.texture_index
             )));
         }
-        let fallback_sampler = SamplerKey::fallback();
-        self.ensure_sampler(fallback_sampler)?;
-        let mut resolved = [
-            DrawTextureBinding {
-                texture: TextureSelection::Fallback,
-                sampler: fallback_sampler,
-            },
-            DrawTextureBinding {
-                texture: TextureSelection::Fallback,
-                sampler: fallback_sampler,
-            },
-        ];
+        let fallback = DrawTextureBinding {
+            texture: TextureSelection::Fallback,
+            sampler: SamplerKey::fallback(),
+        };
+        let mut resolved = [fallback; 2];
         for (slot, binding) in source_bindings[..2].iter().copied().enumerate() {
             let Some(binding) = binding else {
                 continue;
             };
             let handle = handle.ok_or_else(|| {
                 RenderBackendError(format!(
-                    "WebGPU SRD texture {} is bound to slot {slot}, but no texture set was supplied",
+                    "SRD texture {} is bound to slot {slot}, but no texture set was supplied",
                     binding.texture_index
                 ))
             })?;
             let texture_set = self.texture_sets.get(&handle).ok_or_else(|| {
-                RenderBackendError(format!(
-                    "WebGPU SRD texture-set handle {handle:?} is not loaded"
-                ))
+                RenderBackendError(format!("SRD texture-set handle {handle:?} is not loaded"))
             })?;
             if texture_set.get(binding.texture_index).is_none() {
                 return Err(RenderBackendError(format!(
-                    "WebGPU SRD texture index {} is not loaded for slot {slot}",
+                    "SRD texture index {} is not loaded for slot {slot}",
                     binding.texture_index
                 )));
             }
-            let sampler = SamplerKey::from_srd(binding.sampler);
-            self.ensure_sampler(sampler)?;
             resolved[slot] = DrawTextureBinding {
                 texture: TextureSelection::Srd {
                     handle,
                     index: binding.texture_index,
                 },
-                sampler,
+                sampler: SamplerKey::from_srd(binding.sampler),
             };
         }
         Ok(resolved)
@@ -592,32 +585,37 @@ impl WgpuSrdRenderBackend {
         if self.samplers.contains_key(&key) {
             return Ok(());
         }
-        let descriptor = key.descriptor()?;
-        let sampler = self.device.create_sampler(&descriptor);
+        let sampler = self.device.create_sampler(&key.descriptor());
         self.samplers.insert(key, sampler);
         Ok(())
     }
 
-    fn create_bind_group(
-        &self,
-        uniform_chunk: usize,
-        bindings: [DrawTextureBinding; 2],
-    ) -> Result<wgpu::BindGroup, RenderBackendError> {
-        let uniform = &self.uniform_arena.chunks[uniform_chunk].buffer;
+    fn ensure_bind_group(&mut self, key: BindGroupKey) -> Result<(), RenderBackendError> {
+        if self.bind_groups.contains_key(&key) {
+            return Ok(());
+        }
+        let uniform = &self.uniform_arena.chunks[key.uniform_chunk].buffer;
         let views = [
-            self.texture_view(bindings[0].texture)?,
-            self.texture_view(bindings[1].texture)?,
+            self.texture_view(key.bindings[0].texture)?,
+            self.texture_view(key.bindings[1].texture)?,
         ];
         let samplers = [
-            self.samplers.get(&bindings[0].sampler).ok_or_else(|| {
-                RenderBackendError("WebGPU sampler slot 0 was not created".into())
-            })?,
-            self.samplers.get(&bindings[1].sampler).ok_or_else(|| {
-                RenderBackendError("WebGPU sampler slot 1 was not created".into())
-            })?,
+            self.samplers
+                .get(&key.bindings[0].sampler)
+                .expect("sampler created before bind group"),
+            self.samplers
+                .get(&key.bindings[1].sampler)
+                .expect("sampler created before bind group"),
         ];
-        Ok(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Ceylon WebGPU draw bindings"),
+        let backdrop_view = &self
+            .composition
+            .as_ref()
+            .ok_or_else(|| {
+                RenderBackendError("WebGPU composition target is not configured".into())
+            })?
+            .backdrop_view;
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("SRD native draw bindings"),
             layout: &self.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -625,35 +623,37 @@ impl WgpuSrdRenderBackend {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: uniform,
                         offset: 0,
-                        size: NonZeroU64::new(VERTEX_UNIFORM_SIZE),
+                        size: NonZeroU64::new(DRAW_UNIFORM_SIZE),
                     }),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 16,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: uniform,
-                        offset: 0,
-                        size: NonZeroU64::new(PIXEL_UNIFORM_SIZE),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 32,
+                    binding: 1,
                     resource: wgpu::BindingResource::TextureView(views[0]),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 33,
+                    binding: 2,
                     resource: wgpu::BindingResource::Sampler(samplers[0]),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 34,
+                    binding: 3,
                     resource: wgpu::BindingResource::TextureView(views[1]),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 35,
+                    binding: 4,
                     resource: wgpu::BindingResource::Sampler(samplers[1]),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(backdrop_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&self.backdrop_sampler),
+                },
             ],
-        }))
+        });
+        self.bind_groups.insert(key, bind_group);
+        Ok(())
     }
 
     fn texture_view(
@@ -669,7 +669,7 @@ impl WgpuSrdRenderBackend {
                 .map(|texture| &texture.view)
                 .ok_or_else(|| {
                     RenderBackendError(format!(
-                        "WebGPU SRD texture {index} from handle {handle:?} is unavailable"
+                        "SRD texture {index} from handle {handle:?} is unavailable"
                     ))
                 }),
             TextureSelection::Fennel { handle, page } => self
@@ -679,102 +679,54 @@ impl WgpuSrdRenderBackend {
                 .map(|texture| &texture.view)
                 .ok_or_else(|| {
                     RenderBackendError(format!(
-                        "WebGPU Fennel page {page} from handle {handle:?} is unavailable"
+                        "Fennel atlas page {page} from handle {handle:?} is unavailable"
                     ))
                 }),
         }
     }
 
-    fn ensure_pipeline(&mut self, spec: PipelineSpec) -> Result<(), RenderBackendError> {
-        if self.pipelines.contains_key(&spec.key) {
+    fn ensure_pipeline(&mut self, key: PipelineKey) -> Result<(), RenderBackendError> {
+        if self.pipelines.contains_key(&key) {
             return Ok(());
         }
-        let pipeline = self.create_pipeline(spec)?;
-        self.pipelines.insert(spec.key, pipeline);
-        Ok(())
-    }
-
-    fn create_pipeline(
-        &self,
-        spec: PipelineSpec,
-    ) -> Result<wgpu::RenderPipeline, RenderBackendError> {
-        let pair = embedded_wgpu_shader_pair(&spec.key.shader_key).ok_or_else(|| {
-            RenderBackendError(format!(
-                "WebGPU draw requested an untranslated Ceylon shader key {:?}",
-                spec.key.shader_key
-            ))
-        })?;
-        let vertex_source =
-            vertex_source_with_d3d_color_swizzle(pair.vertex_source, pair.vertex_inputs)?;
-        let pixel_source =
-            pixel_source_with_sampler_biases(pair.pixel_source, spec.key.sampler_bias_bits)?;
-        let pixel_source = pixel_source_with_alpha_test(
-            &pixel_source,
-            spec.alpha_stencil.alpha_function().ok_or_else(|| {
-                RenderBackendError("WebGPU draw has an invalid alpha comparison".into())
-            })?,
-            spec.alpha_stencil.alpha_reference.min(255) as u8,
-        )?;
-        let attributes = vertex_attributes(pair, spec.key.input_layout)?;
-        let stride = match spec.key.input_layout {
-            InputLayout::Srd => SrdRenderVertex::STRIDE,
-            InputLayout::Fennel => FennelRenderVertex::STRIDE,
-        } as u64;
-        let blend = blend_state(spec.blend);
-        let polygon_mode = polygon_mode(spec.raster.fill_mode(), self.enabled_features)?;
-        let (front_face, cull_mode) = cull_state(spec.raster.cull_mode().ok_or_else(|| {
-            RenderBackendError("WebGPU draw has an invalid Ceylon cull mode".into())
-        })?);
-        let depth_compare = if spec.depth.z_enabled {
-            compare_function(spec.depth.z_function().ok_or_else(|| {
-                RenderBackendError("WebGPU draw has an invalid Ceylon depth comparison".into())
-            })?)
-        } else {
-            wgpu::CompareFunction::Always
+        let (entry_point, attributes, stride) = match key.vertex_layout {
+            SimpleVertexLayout::Format14 => (
+                "vs_format_14",
+                &SURFACE_ATTRIBUTES[..],
+                SrdVertex::STRIDE as u64,
+            ),
+            SimpleVertexLayout::Format13 => (
+                "vs_format_13",
+                &FENNEL_ATTRIBUTES[..],
+                FennelRenderVertex::STRIDE as u64,
+            ),
         };
-        let stencil = stencil_state(spec.alpha_stencil)?;
-        let write_mask = color_writes(spec.raster.color_write_mask);
-
+        let (front_face, cull_mode) = cull_state(key.raster.cull);
+        let polygon_mode = polygon_mode(key.raster.fill, self.enabled_features)?;
+        let depth_stencil = depth_stencil_state(key.depth, key.stencil, key.raster.depth_bias);
+        let constants = program_constants(key.program);
+        let compilation_options = || wgpu::PipelineCompilationOptions {
+            constants: &constants,
+            zero_initialize_workgroup_memory: true,
+        };
         self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let vertex_module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("translated Ceylon vertex shader"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Owned(vertex_source)),
-            });
-        let pixel_module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("translated Ceylon pixel shader"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Owned(pixel_source)),
-            });
         let pipeline = self
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Ceylon WebGPU render pipeline"),
+                label: Some("SRD native render pipeline"),
                 layout: Some(&self.pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &vertex_module,
-                    entry_point: Some("main"),
+                    module: &self.simple_shader,
+                    entry_point: Some(entry_point),
                     buffers: &[wgpu::VertexBufferLayout {
                         array_stride: stride,
                         step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attributes,
+                        attributes,
                     }],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    compilation_options: compilation_options(),
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: &pixel_module,
-                    entry_point: Some("main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: COLOR_FORMAT,
-                        blend,
-                        write_mask,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
                 primitive: wgpu::PrimitiveState {
-                    topology: match spec.key.topology {
+                    topology: match key.topology {
                         DrawTopology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
                         DrawTopology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
                     },
@@ -785,36 +737,113 @@ impl WgpuSrdRenderBackend {
                     polygon_mode,
                     conservative: false,
                 },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_STENCIL_FORMAT,
-                    depth_write_enabled: spec.depth.z_enabled && spec.depth.z_write_enabled,
-                    depth_compare,
-                    stencil,
-                    bias: wgpu::DepthBiasState {
-                        constant: spec.key.depth_bias,
-                        slope_scale: 0.0,
-                        clamp: 0.0,
-                    },
-                }),
+                depth_stencil: Some(depth_stencil),
                 multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.simple_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COLOR_FORMAT,
+                        blend: blend_state(key.blend),
+                        write_mask: color_writes(key.raster.color_write_mask),
+                    })],
+                    compilation_options: compilation_options(),
+                }),
                 multiview: None,
                 cache: None,
             });
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|error| RenderBackendError(format!("WebGPU pipeline wait failed: {error}")))?;
         if let Some(error) = pollster::block_on(self.device.pop_error_scope()) {
             return Err(RenderBackendError(format!(
-                "WebGPU rejected translated Ceylon shader pair VS{} / PS{}: {error}",
-                pair.vertex_index, pair.pixel_index
+                "native WebGPU pipeline creation failed: {error}"
             )));
         }
-        Ok(pipeline)
+        self.pipelines.insert(key, pipeline);
+        Ok(())
+    }
+
+    fn encode_draw_range(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &CompositionTarget,
+        range: Range<usize>,
+        clear_color: Option<wgpu::Color>,
+    ) {
+        let clears = clear_color.is_some();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("SRD native composition segment"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: match clear_color {
+                        Some(color) => wgpu::LoadOp::Clear(color),
+                        None => wgpu::LoadOp::Load,
+                    },
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &target.depth_stencil_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: if clears {
+                        wgpu::LoadOp::Clear(1.0)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: if clears {
+                        wgpu::LoadOp::Clear(0)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_blend_constant(wgpu::Color::WHITE);
+        for draw in &self.pending_draws[range] {
+            pass.set_pipeline(
+                self.pipelines
+                    .get(&draw.pipeline)
+                    .expect("pending draw pipeline was prepared"),
+            );
+            pass.set_bind_group(
+                0,
+                self.bind_groups
+                    .get(&draw.bind_group)
+                    .expect("pending draw bind group was prepared"),
+                &[draw.dynamic_offset],
+            );
+            pass.set_vertex_buffer(
+                0,
+                self.vertex_arena.chunks[draw.vertex_chunk]
+                    .buffer
+                    .slice(draw.vertex_range.clone()),
+            );
+            pass.set_scissor_rect(
+                draw.scissor[0],
+                draw.scissor[1],
+                draw.scissor[2],
+                draw.scissor[3],
+            );
+            pass.set_stencil_reference(draw.stencil_reference);
+            pass.draw(0..draw.vertex_count, 0..1);
+        }
     }
 }
 
 impl SrdRenderBackend for WgpuSrdRenderBackend {
-    fn name(&self) -> &'static str {
-        "WebGPU"
-    }
-
     fn upload_srd_textures(
         &mut self,
         sources: SrdTextureSourceSet,
@@ -841,22 +870,18 @@ impl SrdRenderBackend for WgpuSrdRenderBackend {
         Ok(handle)
     }
 
-    fn clear_uploaded_resources(&mut self) {
-        self.texture_sets.clear();
-        self.fennel_atlases.clear();
-    }
-
     fn configure_composition_target(&mut self, size: [u32; 2]) -> Result<(), RenderBackendError> {
         if self.encoder.is_some() {
             return Err(RenderBackendError(
-                "WebGPU composition target cannot be resized during a composition pass".into(),
+                "WebGPU composition target cannot be resized during a pass".into(),
             ));
         }
-        if size[0] == 0 || size[1] == 0 {
+        if size.contains(&0) {
             return Err(RenderBackendError(
                 "WebGPU composition dimensions must be non-zero".into(),
             ));
         }
+        self.bind_groups.clear();
         self.composition = Some(CompositionTarget::new(&self.device, size));
         Ok(())
     }
@@ -871,53 +896,72 @@ impl SrdRenderBackend for WgpuSrdRenderBackend {
                 "WebGPU composition target is already active".into(),
             ));
         }
-        let target = self.composition.as_ref().ok_or_else(|| {
+        self.composition.as_ref().ok_or_else(|| {
             RenderBackendError("WebGPU composition target is not configured".into())
         })?;
         self.uniform_arena.reset();
         self.vertex_arena.reset();
+        self.pending_draws.clear();
         self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Ceylon WebGPU composition encoder"),
-            });
-        {
-            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Ceylon WebGPU composition clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.color_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(argb_color(clear_argb)),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &target.depth_stencil_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Store,
-                    }),
+        self.encoder = Some(
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("SRD native composition encoder"),
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        }
-        self.encoder = Some(encoder);
+        );
+        self.clear_color = Some(argb_color(clear_argb));
         Ok(())
     }
 
     fn end_composition(&mut self) -> Result<(), RenderBackendError> {
-        let encoder = self
+        let mut encoder = self
             .encoder
             .take()
             .ok_or_else(|| RenderBackendError("WebGPU composition target is not active".into()))?;
+        let clear_color = self.clear_color.take().ok_or_else(|| {
+            RenderBackendError("WebGPU composition clear state is not active".into())
+        })?;
+        let target = self.composition.as_ref().ok_or_else(|| {
+            RenderBackendError("WebGPU composition target is not configured".into())
+        })?;
+
+        let extent = wgpu::Extent3d {
+            width: target.size[0],
+            height: target.size[1],
+            depth_or_array_layers: 1,
+        };
+        let mut first_segment = true;
+        for range in
+            target_color_segments(self.pending_draws.iter().map(|draw| draw.requires_backdrop))
+        {
+            let snapshot_before_next_draw = range.end < self.pending_draws.len();
+            self.encode_draw_range(
+                &mut encoder,
+                target,
+                range,
+                first_segment.then_some(clear_color),
+            );
+            first_segment = false;
+            if snapshot_before_next_draw {
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &target.color,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &target.backdrop,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    extent,
+                );
+            }
+        }
+        self.pending_draws.clear();
+
         let submission = self.queue.submit([encoder.finish()]);
         self.device
             .poll(wgpu::PollType::Wait {
@@ -955,7 +999,7 @@ impl SrdRenderBackend for WgpuSrdRenderBackend {
             .checked_mul(u64::from(target.size[1]))
             .ok_or_else(|| RenderBackendError("WebGPU readback buffer size overflow".into()))?;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Ceylon WebGPU composition readback"),
+            label: Some("SRD native composition readback"),
             size: buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
@@ -963,7 +1007,7 @@ impl SrdRenderBackend for WgpuSrdRenderBackend {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Ceylon WebGPU readback encoder"),
+                label: Some("SRD native readback encoder"),
             });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -1005,16 +1049,14 @@ impl SrdRenderBackend for WgpuSrdRenderBackend {
                 RenderBackendError(format!("WebGPU readback mapping failed: {error}"))
             })?;
         let mapped = buffer_slice.get_mapped_range();
-        let pixel_count = usize::try_from(target.size[0])
+        let byte_count = usize::try_from(target.size[0])
             .ok()
             .and_then(|width| {
                 usize::try_from(target.size[1])
                     .ok()
                     .and_then(|height| width.checked_mul(height))
             })
-            .ok_or_else(|| RenderBackendError("WebGPU readback pixel count overflow".into()))?;
-        let byte_count = pixel_count
-            .checked_mul(4)
+            .and_then(|pixels| pixels.checked_mul(4))
             .ok_or_else(|| RenderBackendError("WebGPU readback byte count overflow".into()))?;
         let rgba = if padded_row == unpadded_row {
             mapped[..byte_count].to_vec()
@@ -1037,38 +1079,9 @@ impl SrdRenderBackend for WgpuSrdRenderBackend {
         })
     }
 
-    fn render_srd(
-        &mut self,
-        draws: &[EvidenceCompleteSrdDraw],
-        external: SrdExternalRenderState,
-        textures: Option<SrdTextureSetHandle>,
-    ) -> Result<(), RenderBackendError> {
-        for draw in draws {
-            self.render_srd_vertices(draw, &draw.quad.vertices, external, textures)?;
-        }
-        Ok(())
-    }
-
-    fn render_srd_triangle_strip(
-        &mut self,
-        state: &EvidenceCompleteSrdDraw,
-        vertices: &[SrdRenderVertex],
-        external: SrdExternalRenderState,
-        textures: Option<SrdTextureSetHandle>,
-    ) -> Result<(), RenderBackendError> {
-        self.render_srd_vertices(state, vertices, external, textures)
-    }
-
-    fn render_fennel(
-        &mut self,
-        batches: &[FennelRenderBatch<'_>],
-        external: SrdExternalRenderState,
-        atlas: FennelAtlasHandle,
-    ) -> Result<(), RenderBackendError> {
-        for batch in batches {
-            self.render_fennel_batch(batch, external, atlas)?;
-        }
-        Ok(())
+    fn render_simple(&mut self, draw: SimpleDraw<'_>) -> Result<(), RenderBackendError> {
+        let prepared = self.prepare_simple_draw(draw)?;
+        self.submit_draw(prepared)
     }
 }
 
@@ -1080,7 +1093,7 @@ impl CompositionTarget {
             depth_or_array_layers: 1,
         };
         let color = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Ceylon WebGPU composition color"),
+            label: Some("SRD native composition color"),
             size: extent,
             mip_level_count: 1,
             sample_count: 1,
@@ -1090,8 +1103,19 @@ impl CompositionTarget {
             view_formats: &[],
         });
         let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let backdrop = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("SRD native target-color snapshot"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: COLOR_FORMAT,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let backdrop_view = backdrop.create_view(&wgpu::TextureViewDescriptor::default());
         let depth_stencil = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Ceylon WebGPU composition depth/stencil"),
+            label: Some("SRD native composition depth/stencil"),
             size: extent,
             mip_level_count: 1,
             sample_count: 1,
@@ -1104,6 +1128,8 @@ impl CompositionTarget {
         Self {
             color,
             color_view,
+            backdrop,
+            backdrop_view,
             depth_stencil,
             depth_stencil_view,
             size,
@@ -1171,229 +1197,124 @@ impl GpuArena {
     }
 }
 
-impl PipelineSpec {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        shader_key: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH],
-        input_layout: InputLayout,
-        topology: DrawTopology,
-        sampler_bias_bits: [u32; 2],
-        blend: SrdD3d9BlendPreset,
-        raster: CeylonRasterState,
-        depth: CeylonDepthState,
-        alpha_stencil: CeylonAlphaStencilState,
-        depth_bias: i32,
-    ) -> Result<Self, RenderBackendError> {
-        let alpha_comparison = alpha_stencil.alpha_function().ok_or_else(|| {
-            RenderBackendError("WebGPU draw has an invalid alpha comparison".into())
-        })?;
-        let depth_comparison = depth.z_function().ok_or_else(|| {
-            RenderBackendError("WebGPU draw has an invalid depth comparison".into())
-        })?;
-        let cull_mode = raster
-            .cull_mode()
-            .ok_or_else(|| RenderBackendError("WebGPU draw has an invalid cull mode".into()))?;
-        let (stencil_comparison, stencil_fail, stencil_depth_fail, stencil_pass) = if alpha_stencil
-            .stencil_enabled
-        {
-            (
-                alpha_stencil.stencil_function().ok_or_else(|| {
-                    RenderBackendError("WebGPU draw has an invalid stencil comparison".into())
-                })? as u32,
-                alpha_stencil.stencil_fail().ok_or_else(|| {
-                    RenderBackendError("WebGPU draw has an invalid stencil-fail operation".into())
-                })? as u32,
-                alpha_stencil.stencil_z_fail().ok_or_else(|| {
-                    RenderBackendError(
-                        "WebGPU draw has an invalid stencil depth-fail operation".into(),
-                    )
-                })? as u32,
-                alpha_stencil.stencil_pass().ok_or_else(|| {
-                    RenderBackendError("WebGPU draw has an invalid stencil-pass operation".into())
-                })? as u32,
-            )
-        } else {
-            (
-                D3d9ComparisonFunction::Always as u32,
-                D3d9StencilOperation::Keep as u32,
-                D3d9StencilOperation::Keep as u32,
-                D3d9StencilOperation::Keep as u32,
-            )
-        };
-        let alpha_reference = if alpha_stencil.alpha_test_enabled {
-            alpha_stencil.alpha_reference.min(255) as u8
-        } else {
-            0
-        };
-        let alpha_comparison = if alpha_stencil.alpha_test_enabled {
-            alpha_comparison
-        } else {
-            D3d9ComparisonFunction::Always
-        };
-        Ok(Self {
-            key: PipelineKey {
-                shader_key,
-                input_layout,
-                topology,
-                sampler_bias_bits,
-                alpha_comparison: alpha_comparison as u32,
-                alpha_reference,
-                blend_enabled: blend.alpha_blend_enabled,
-                source_blend: blend.source_blend as u32,
-                destination_blend: blend.destination_blend as u32,
-                blend_operation: blend.blend_operation as u32,
-                separate_alpha_blend: blend.separate_alpha_blend_enabled,
-                source_blend_alpha: blend.source_blend_alpha as u32,
-                destination_blend_alpha: blend.destination_blend_alpha as u32,
-                blend_operation_alpha: blend.blend_operation_alpha as u32,
-                cull_mode: cull_mode as u32,
-                fill_mode: raster.fill_mode() as u32,
-                color_write_mask: raster.color_write_mask,
-                depth_enabled: depth.z_enabled,
-                depth_write_enabled: depth.z_write_enabled,
-                depth_comparison: depth_comparison as u32,
-                stencil_enabled: alpha_stencil.stencil_enabled,
-                stencil_comparison,
-                stencil_fail,
-                stencil_depth_fail,
-                stencil_pass,
-                stencil_read_mask: alpha_stencil.stencil_mask,
-                stencil_write_mask: alpha_stencil.stencil_write_mask,
-                depth_bias,
-            },
-            blend,
-            raster,
-            depth,
-            alpha_stencil,
-        })
-    }
-}
-
 impl SamplerKey {
-    fn fallback() -> Self {
+    const fn fallback() -> Self {
         Self {
-            address_u: TextureAddressMode::Clamp as u32,
-            address_v: TextureAddressMode::Clamp as u32,
-            min_filter: TextureFilter::Point as u32,
-            mag_filter: TextureFilter::Point as u32,
-            mip_filter: TextureFilter::Point as u32,
+            address_u: TextureAddressMode::Clamp,
+            address_v: TextureAddressMode::Clamp,
+            min_filter: TextureFilter::Point,
+            mag_filter: TextureFilter::Point,
+            mip_filter: TextureFilter::Point,
             lod_min_bits: 0.0f32.to_bits(),
             lod_max_bits: 0.0f32.to_bits(),
             anisotropy: 1,
         }
     }
 
-    fn from_srd(state: TextureSamplerState) -> Self {
+    const fn from_srd(state: TextureSamplerState) -> Self {
         Self {
-            address_u: state.address_u as u32,
-            address_v: state.address_v as u32,
-            min_filter: state.min_filter as u32,
-            mag_filter: state.mag_filter as u32,
-            // The isolated D3D9 renderer leaves MIPFILTER at the device default,
-            // whose value is NONE. Clamping WebGPU to LOD 0 preserves that contract.
-            mip_filter: TextureFilter::Point as u32,
+            address_u: state.address_u,
+            address_v: state.address_v,
+            min_filter: state.min_filter,
+            mag_filter: state.mag_filter,
+            mip_filter: TextureFilter::Point,
             lod_min_bits: 0.0f32.to_bits(),
             lod_max_bits: 0.0f32.to_bits(),
             anisotropy: 1,
         }
     }
 
-    fn from_fennel(state: RuhunaD3d9SamplerState) -> Self {
+    fn from_fennel(state: RuhunaSamplerState) -> Self {
         let anisotropy = u16::try_from(state.max_anisotropy.max(1)).unwrap_or(u16::MAX);
         let all_linear = state.base.min_filter == TextureFilter::Linear
             && state.base.mag_filter == TextureFilter::Linear
             && state.mip_filter == TextureFilter::Linear;
         Self {
-            address_u: state.base.address_u as u32,
-            address_v: state.base.address_v as u32,
-            min_filter: state.base.min_filter as u32,
-            mag_filter: state.base.mag_filter as u32,
-            mip_filter: state.mip_filter as u32,
+            address_u: state.base.address_u,
+            address_v: state.base.address_v,
+            min_filter: state.base.min_filter,
+            mag_filter: state.base.mag_filter,
+            mip_filter: state.mip_filter,
             lod_min_bits: (state.max_mip_level as f32).to_bits(),
             lod_max_bits: 32.0f32.to_bits(),
             anisotropy: if all_linear { anisotropy } else { 1 },
         }
     }
 
-    fn descriptor(self) -> Result<wgpu::SamplerDescriptor<'static>, RenderBackendError> {
-        Ok(wgpu::SamplerDescriptor {
-            label: Some("Ceylon WebGPU sampler"),
-            address_mode_u: address_mode(self.address_u)?,
-            address_mode_v: address_mode(self.address_v)?,
+    fn descriptor(self) -> wgpu::SamplerDescriptor<'static> {
+        wgpu::SamplerDescriptor {
+            label: Some("SRD native sampler"),
+            address_mode_u: address_mode(self.address_u),
+            address_mode_v: address_mode(self.address_v),
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: filter_mode(self.mag_filter)?,
-            min_filter: filter_mode(self.min_filter)?,
-            mipmap_filter: filter_mode(self.mip_filter)?,
+            mag_filter: filter_mode(self.mag_filter),
+            min_filter: filter_mode(self.min_filter),
+            mipmap_filter: filter_mode(self.mip_filter),
             lod_min_clamp: f32::from_bits(self.lod_min_bits),
             lod_max_clamp: f32::from_bits(self.lod_max_bits),
             compare: None,
             anisotropy_clamp: self.anisotropy,
             border_color: None,
-        })
+        }
     }
 }
 
-fn validate_embedded_shader_modules(device: &wgpu::Device) -> Result<(), RenderBackendError> {
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let _vertex_modules: Vec<_> = vertex_sources()
-        .enumerate()
-        .map(|(index, source)| {
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&format!("translated Ceylon VS {index}")),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(source)),
-            })
-        })
-        .collect();
-    let _pixel_modules: Vec<_> = pixel_sources()
-        .enumerate()
-        .map(|(index, source)| {
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&format!("translated Ceylon PS {index}")),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(source)),
-            })
-        })
-        .collect();
-    if let Some(error) = pollster::block_on(device.pop_error_scope()) {
-        return Err(RenderBackendError(format!(
-            "WebGPU rejected the embedded Ceylon shader corpus: {error}"
-        )));
+fn create_shader(device: &wgpu::Device, label: &str, source: &'static str) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+fn matrix_columns(matrix: crate::projection::Matrix4x4) -> [[f32; 4]; 4] {
+    let mut columns = [[0.0; 4]; 4];
+    for (column, values) in columns.iter_mut().enumerate() {
+        for (row, value) in values.iter_mut().enumerate() {
+            *value = matrix.rows[row][column];
+        }
     }
-    Ok(())
+    columns
+}
+
+fn program_constants(program: SimpleShaderProgram) -> [(&'static str, f64); 4] {
+    [
+        ("SIMPLE_2D_TRANSFORM", program.transform_mode as u32 as f64),
+        (
+            "SIMPLE_TEXTURE_COUNT",
+            f64::from(program.texture_count.get()),
+        ),
+        (
+            "SIMPLE_MULTI_TEXTURE_MODE",
+            program.multi_texture_mode as u32 as f64,
+        ),
+        ("SIMPLE_BLEND_MODE", f64::from(program.blend_mode.get())),
+    ]
 }
 
 fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Ceylon WebGPU bindings"),
+        label: Some("SRD native bind-group layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: true,
-                    min_binding_size: NonZeroU64::new(VERTEX_UNIFORM_SIZE),
+                    min_binding_size: NonZeroU64::new(DRAW_UNIFORM_SIZE),
                 },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 16,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: NonZeroU64::new(PIXEL_UNIFORM_SIZE),
-                },
-                count: None,
-            },
-            texture_layout_entry(32),
-            sampler_layout_entry(33),
-            texture_layout_entry(34),
-            sampler_layout_entry(35),
+            texture_layout_entry(1),
+            sampler_layout_entry(2),
+            texture_layout_entry(3),
+            sampler_layout_entry(4),
+            texture_layout_entry(5),
+            sampler_layout_entry(6),
         ],
     })
 }
 
-fn texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1406,7 +1327,7 @@ fn texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn sampler_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn sampler_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1415,187 +1336,194 @@ fn sampler_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn vertex_attributes(
-    pair: WgpuShaderPair,
-    input_layout: InputLayout,
-) -> Result<Vec<wgpu::VertexAttribute>, RenderBackendError> {
-    pair.vertex_inputs
-        .iter()
-        .copied()
-        .map(|input| vertex_attribute(input, input_layout))
-        .collect()
-}
+const SURFACE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Unorm8x4,
+        offset: 12,
+        shader_location: 1,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Unorm8x4,
+        offset: 16,
+        shader_location: 2,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 20,
+        shader_location: 3,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 28,
+        shader_location: 4,
+    },
+];
 
-fn vertex_attribute(
-    input: WgpuVertexInput,
-    input_layout: InputLayout,
-) -> Result<wgpu::VertexAttribute, RenderBackendError> {
-    let (offset, format) = match (input_layout, input.semantic) {
-        (_, WgpuVertexSemantic::Position) => (0, wgpu::VertexFormat::Float32x3),
-        (InputLayout::Srd, WgpuVertexSemantic::Color0)
-        | (InputLayout::Fennel, WgpuVertexSemantic::Color0) => (12, wgpu::VertexFormat::Unorm8x4),
-        (InputLayout::Srd, WgpuVertexSemantic::Color1)
-        | (InputLayout::Fennel, WgpuVertexSemantic::Color1) => (16, wgpu::VertexFormat::Unorm8x4),
-        (InputLayout::Srd, WgpuVertexSemantic::TexCoord0)
-        | (InputLayout::Fennel, WgpuVertexSemantic::TexCoord0) => {
-            (20, wgpu::VertexFormat::Float32x2)
-        }
-        (InputLayout::Srd, WgpuVertexSemantic::TexCoord1) => (28, wgpu::VertexFormat::Float32x2),
-        (layout, semantic) => {
-            return Err(RenderBackendError(format!(
-                "translated Ceylon vertex shader requires {semantic:?}, which {layout:?} vertices do not carry"
-            )));
-        }
-    };
-    Ok(wgpu::VertexAttribute {
-        format,
-        offset,
-        shader_location: input.location,
+const FENNEL_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Unorm8x4,
+        offset: 12,
+        shader_location: 1,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Unorm8x4,
+        offset: 16,
+        shader_location: 2,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 20,
+        shader_location: 3,
+    },
+];
+
+fn blend_state(blend: crate::renderer::pipeline::BlendState) -> Option<wgpu::BlendState> {
+    blend.enabled.then(|| wgpu::BlendState {
+        color: blend_component(blend.color),
+        alpha: blend_component(blend.alpha),
     })
 }
 
-fn blend_state(blend: SrdD3d9BlendPreset) -> Option<wgpu::BlendState> {
-    blend.alpha_blend_enabled.then(|| {
-        let color = blend_component(
-            blend.source_blend,
-            blend.destination_blend,
-            blend.blend_operation,
-        );
-        let alpha = if blend.separate_alpha_blend_enabled {
-            blend_component(
-                blend.source_blend_alpha,
-                blend.destination_blend_alpha,
-                blend.blend_operation_alpha,
-            )
-        } else {
-            color
-        };
-        wgpu::BlendState { color, alpha }
-    })
-}
-
-fn blend_component(
-    source: D3d9BlendFactor,
-    destination: D3d9BlendFactor,
-    operation: D3d9BlendOperation,
-) -> wgpu::BlendComponent {
+fn blend_component(equation: BlendComponent) -> wgpu::BlendComponent {
     wgpu::BlendComponent {
-        src_factor: blend_factor(source),
-        dst_factor: blend_factor(destination),
-        operation: blend_operation(operation),
+        src_factor: blend_factor(equation.source),
+        dst_factor: blend_factor(equation.destination),
+        operation: blend_operation(equation.operation),
     }
 }
 
-fn blend_factor(factor: D3d9BlendFactor) -> wgpu::BlendFactor {
+const fn blend_factor(factor: BlendFactor) -> wgpu::BlendFactor {
     match factor {
-        D3d9BlendFactor::Zero => wgpu::BlendFactor::Zero,
-        D3d9BlendFactor::One => wgpu::BlendFactor::One,
-        D3d9BlendFactor::SourceColor => wgpu::BlendFactor::Src,
-        D3d9BlendFactor::InverseSourceColor => wgpu::BlendFactor::OneMinusSrc,
-        D3d9BlendFactor::SourceAlpha => wgpu::BlendFactor::SrcAlpha,
-        D3d9BlendFactor::InverseSourceAlpha => wgpu::BlendFactor::OneMinusSrcAlpha,
-        D3d9BlendFactor::DestinationAlpha => wgpu::BlendFactor::DstAlpha,
-        D3d9BlendFactor::InverseDestinationAlpha => wgpu::BlendFactor::OneMinusDstAlpha,
-        D3d9BlendFactor::DestinationColor => wgpu::BlendFactor::Dst,
-        D3d9BlendFactor::InverseDestinationColor => wgpu::BlendFactor::OneMinusDst,
-        D3d9BlendFactor::SourceAlphaSaturate => wgpu::BlendFactor::SrcAlphaSaturated,
-        D3d9BlendFactor::BlendFactor => wgpu::BlendFactor::Constant,
-        D3d9BlendFactor::InverseBlendFactor => wgpu::BlendFactor::OneMinusConstant,
+        BlendFactor::Zero => wgpu::BlendFactor::Zero,
+        BlendFactor::One => wgpu::BlendFactor::One,
+        BlendFactor::SourceColor => wgpu::BlendFactor::Src,
+        BlendFactor::OneMinusSourceColor => wgpu::BlendFactor::OneMinusSrc,
+        BlendFactor::SourceAlpha => wgpu::BlendFactor::SrcAlpha,
+        BlendFactor::OneMinusSourceAlpha => wgpu::BlendFactor::OneMinusSrcAlpha,
+        BlendFactor::DestinationAlpha => wgpu::BlendFactor::DstAlpha,
+        BlendFactor::OneMinusDestinationAlpha => wgpu::BlendFactor::OneMinusDstAlpha,
+        BlendFactor::DestinationColor => wgpu::BlendFactor::Dst,
+        BlendFactor::OneMinusDestinationColor => wgpu::BlendFactor::OneMinusDst,
+        BlendFactor::SourceAlphaSaturated => wgpu::BlendFactor::SrcAlphaSaturated,
+        BlendFactor::Constant => wgpu::BlendFactor::Constant,
+        BlendFactor::OneMinusConstant => wgpu::BlendFactor::OneMinusConstant,
     }
 }
 
-fn blend_operation(operation: D3d9BlendOperation) -> wgpu::BlendOperation {
+const fn blend_operation(operation: BlendOperation) -> wgpu::BlendOperation {
     match operation {
-        D3d9BlendOperation::Add => wgpu::BlendOperation::Add,
-        D3d9BlendOperation::Subtract => wgpu::BlendOperation::Subtract,
-        D3d9BlendOperation::ReverseSubtract => wgpu::BlendOperation::ReverseSubtract,
-        D3d9BlendOperation::Minimum => wgpu::BlendOperation::Min,
-        D3d9BlendOperation::Maximum => wgpu::BlendOperation::Max,
+        BlendOperation::Add => wgpu::BlendOperation::Add,
+        BlendOperation::Subtract => wgpu::BlendOperation::Subtract,
+        BlendOperation::ReverseSubtract => wgpu::BlendOperation::ReverseSubtract,
+        BlendOperation::Minimum => wgpu::BlendOperation::Min,
+        BlendOperation::Maximum => wgpu::BlendOperation::Max,
     }
 }
 
-fn compare_function(function: D3d9ComparisonFunction) -> wgpu::CompareFunction {
-    match function {
-        D3d9ComparisonFunction::Never => wgpu::CompareFunction::Never,
-        D3d9ComparisonFunction::Less => wgpu::CompareFunction::Less,
-        D3d9ComparisonFunction::Equal => wgpu::CompareFunction::Equal,
-        D3d9ComparisonFunction::LessEqual => wgpu::CompareFunction::LessEqual,
-        D3d9ComparisonFunction::Greater => wgpu::CompareFunction::Greater,
-        D3d9ComparisonFunction::NotEqual => wgpu::CompareFunction::NotEqual,
-        D3d9ComparisonFunction::GreaterEqual => wgpu::CompareFunction::GreaterEqual,
-        D3d9ComparisonFunction::Always => wgpu::CompareFunction::Always,
+const fn compare_function(comparison: CompareFunction) -> wgpu::CompareFunction {
+    match comparison {
+        CompareFunction::Never => wgpu::CompareFunction::Never,
+        CompareFunction::Less => wgpu::CompareFunction::Less,
+        CompareFunction::Equal => wgpu::CompareFunction::Equal,
+        CompareFunction::LessEqual => wgpu::CompareFunction::LessEqual,
+        CompareFunction::Greater => wgpu::CompareFunction::Greater,
+        CompareFunction::NotEqual => wgpu::CompareFunction::NotEqual,
+        CompareFunction::GreaterEqual => wgpu::CompareFunction::GreaterEqual,
+        CompareFunction::Always => wgpu::CompareFunction::Always,
     }
 }
 
-fn stencil_state(state: CeylonAlphaStencilState) -> Result<wgpu::StencilState, RenderBackendError> {
-    if !state.stencil_enabled {
-        return Ok(wgpu::StencilState::default());
-    }
-    let face = wgpu::StencilFaceState {
-        compare: compare_function(state.stencil_function().ok_or_else(|| {
-            RenderBackendError("WebGPU draw has an invalid stencil comparison".into())
-        })?),
-        fail_op: stencil_operation(state.stencil_fail().ok_or_else(|| {
-            RenderBackendError("WebGPU draw has an invalid stencil-fail operation".into())
-        })?),
-        depth_fail_op: stencil_operation(state.stencil_z_fail().ok_or_else(|| {
-            RenderBackendError("WebGPU draw has an invalid stencil depth-fail operation".into())
-        })?),
-        pass_op: stencil_operation(state.stencil_pass().ok_or_else(|| {
-            RenderBackendError("WebGPU draw has an invalid stencil-pass operation".into())
-        })?),
+fn depth_stencil_state(
+    depth: DepthState,
+    stencil: StencilState,
+    depth_bias: i32,
+) -> wgpu::DepthStencilState {
+    let stencil = if stencil.enabled {
+        let face = wgpu::StencilFaceState {
+            compare: compare_function(stencil.face.comparison),
+            fail_op: stencil_operation(stencil.face.fail),
+            depth_fail_op: stencil_operation(stencil.face.depth_fail),
+            pass_op: stencil_operation(stencil.face.pass),
+        };
+        wgpu::StencilState {
+            front: face,
+            back: face,
+            read_mask: u32::from(stencil.read_mask),
+            write_mask: u32::from(stencil.write_mask),
+        }
+    } else {
+        wgpu::StencilState::default()
     };
-    Ok(wgpu::StencilState {
-        front: face,
-        back: face,
-        read_mask: state.stencil_mask,
-        write_mask: state.stencil_write_mask,
-    })
-}
-
-fn stencil_operation(operation: D3d9StencilOperation) -> wgpu::StencilOperation {
-    match operation {
-        D3d9StencilOperation::Keep => wgpu::StencilOperation::Keep,
-        D3d9StencilOperation::Zero => wgpu::StencilOperation::Zero,
-        D3d9StencilOperation::Replace => wgpu::StencilOperation::Replace,
-        D3d9StencilOperation::IncrementSaturate => wgpu::StencilOperation::IncrementClamp,
-        D3d9StencilOperation::DecrementSaturate => wgpu::StencilOperation::DecrementClamp,
-        D3d9StencilOperation::Invert => wgpu::StencilOperation::Invert,
-        D3d9StencilOperation::Increment => wgpu::StencilOperation::IncrementWrap,
-        D3d9StencilOperation::Decrement => wgpu::StencilOperation::DecrementWrap,
+    wgpu::DepthStencilState {
+        format: DEPTH_STENCIL_FORMAT,
+        depth_write_enabled: depth.enabled && depth.write_enabled,
+        depth_compare: if depth.enabled {
+            compare_function(depth.comparison)
+        } else {
+            wgpu::CompareFunction::Always
+        },
+        stencil,
+        bias: wgpu::DepthBiasState {
+            constant: depth_bias,
+            slope_scale: 0.0,
+            clamp: 0.0,
+        },
     }
 }
 
-fn cull_state(mode: D3d9CullMode) -> (wgpu::FrontFace, Option<wgpu::Face>) {
+const fn stencil_operation(operation: StencilOperation) -> wgpu::StencilOperation {
+    match operation {
+        StencilOperation::Keep => wgpu::StencilOperation::Keep,
+        StencilOperation::Zero => wgpu::StencilOperation::Zero,
+        StencilOperation::Replace => wgpu::StencilOperation::Replace,
+        StencilOperation::IncrementClamp => wgpu::StencilOperation::IncrementClamp,
+        StencilOperation::DecrementClamp => wgpu::StencilOperation::DecrementClamp,
+        StencilOperation::Invert => wgpu::StencilOperation::Invert,
+        StencilOperation::IncrementWrap => wgpu::StencilOperation::IncrementWrap,
+        StencilOperation::DecrementWrap => wgpu::StencilOperation::DecrementWrap,
+    }
+}
+
+const fn cull_state(mode: CullMode) -> (wgpu::FrontFace, Option<wgpu::Face>) {
     match mode {
-        D3d9CullMode::None => (wgpu::FrontFace::Ccw, None),
-        D3d9CullMode::Clockwise => (wgpu::FrontFace::Ccw, Some(wgpu::Face::Back)),
-        D3d9CullMode::CounterClockwise => (wgpu::FrontFace::Cw, Some(wgpu::Face::Back)),
+        CullMode::None => (wgpu::FrontFace::Ccw, None),
+        CullMode::Clockwise => (wgpu::FrontFace::Ccw, Some(wgpu::Face::Back)),
+        CullMode::CounterClockwise => (wgpu::FrontFace::Cw, Some(wgpu::Face::Back)),
     }
 }
 
 fn polygon_mode(
-    mode: D3d9FillMode,
+    mode: FillMode,
     enabled_features: wgpu::Features,
 ) -> Result<wgpu::PolygonMode, RenderBackendError> {
     match mode {
-        D3d9FillMode::Solid => Ok(wgpu::PolygonMode::Fill),
-        D3d9FillMode::Wireframe if enabled_features.contains(wgpu::Features::POLYGON_MODE_LINE) => {
+        FillMode::Solid => Ok(wgpu::PolygonMode::Fill),
+        FillMode::Wireframe if enabled_features.contains(wgpu::Features::POLYGON_MODE_LINE) => {
             Ok(wgpu::PolygonMode::Line)
         }
-        D3d9FillMode::Point if enabled_features.contains(wgpu::Features::POLYGON_MODE_POINT) => {
+        FillMode::Point if enabled_features.contains(wgpu::Features::POLYGON_MODE_POINT) => {
             Ok(wgpu::PolygonMode::Point)
         }
-        D3d9FillMode::Wireframe => Err(RenderBackendError(
+        FillMode::Wireframe => Err(RenderBackendError(
             "WebGPU adapter does not support wireframe polygon mode".into(),
         )),
-        D3d9FillMode::Point => Err(RenderBackendError(
+        FillMode::Point => Err(RenderBackendError(
             "WebGPU adapter does not support point polygon mode".into(),
         )),
     }
 }
 
-fn color_writes(mask: u32) -> wgpu::ColorWrites {
+fn color_writes(mask: u8) -> wgpu::ColorWrites {
     let mut writes = wgpu::ColorWrites::empty();
     if mask & 1 != 0 {
         writes |= wgpu::ColorWrites::RED;
@@ -1612,83 +1540,27 @@ fn color_writes(mask: u32) -> wgpu::ColorWrites {
     writes
 }
 
-fn address_mode(value: u32) -> Result<wgpu::AddressMode, RenderBackendError> {
-    match value {
-        value if value == TextureAddressMode::Wrap as u32 => Ok(wgpu::AddressMode::Repeat),
-        value if value == TextureAddressMode::Clamp as u32 => Ok(wgpu::AddressMode::ClampToEdge),
-        _ => Err(RenderBackendError(format!(
-            "WebGPU sampler uses unsupported D3D9 address mode {value}"
-        ))),
+const fn address_mode(mode: TextureAddressMode) -> wgpu::AddressMode {
+    match mode {
+        TextureAddressMode::Wrap => wgpu::AddressMode::Repeat,
+        TextureAddressMode::Clamp => wgpu::AddressMode::ClampToEdge,
     }
 }
 
-fn filter_mode(value: u32) -> Result<wgpu::FilterMode, RenderBackendError> {
-    match value {
-        value if value == TextureFilter::Point as u32 => Ok(wgpu::FilterMode::Nearest),
-        value if value == TextureFilter::Linear as u32 => Ok(wgpu::FilterMode::Linear),
-        _ => Err(RenderBackendError(format!(
-            "WebGPU sampler uses unsupported D3D9 filter mode {value}"
-        ))),
-    }
-}
-
-fn serialize_constants(
-    constants: CeylonSrdFixedShaderConstants,
-    is_2d: bool,
-) -> (
-    [u8; VERTEX_UNIFORM_SIZE as usize],
-    [u8; PIXEL_UNIFORM_SIZE as usize],
-) {
-    let mut vertex = [0u8; VERTEX_UNIFORM_SIZE as usize];
-    let mut pixel = [0u8; PIXEL_UNIFORM_SIZE as usize];
-    write_matrix_registers(&mut vertex, 0, constants.vertex_c0_c3_world.rows);
-    write_matrix_registers(&mut vertex, 4, constants.vertex_c4_c7.rows);
-    write_register(&mut vertex, 8, constants.vertex_c8_fixed_param0);
-    write_register(&mut vertex, 9, constants.vertex_c9_fixed_param1);
-    if is_2d {
-        write_register(&mut vertex, 10, constants.vertex_c10_screen_param);
-    } else {
-        write_matrix_registers(
-            &mut vertex,
-            10,
-            constants.vertex_c10_c13_projection_view.rows,
-        );
-    }
-    write_register(&mut pixel, 0, constants.pixel_c0_fixed_param0);
-    (vertex, pixel)
-}
-
-fn write_matrix_registers(destination: &mut [u8], first: usize, rows: [[f32; 4]; 4]) {
-    for (index, row) in rows.into_iter().enumerate() {
-        write_register(destination, first + index, row);
-    }
-}
-
-fn write_register(destination: &mut [u8], register: usize, values: [f32; 4]) {
-    let start = register * 16;
-    for (index, value) in values.into_iter().enumerate() {
-        destination[start + index * 4..start + index * 4 + 4]
-            .copy_from_slice(&value.to_bits().to_le_bytes());
-    }
-}
-
-fn argb_color(argb: u32) -> wgpu::Color {
-    wgpu::Color {
-        r: f64::from((argb >> 16) & 0xff) / 255.0,
-        g: f64::from((argb >> 8) & 0xff) / 255.0,
-        b: f64::from(argb & 0xff) / 255.0,
-        a: f64::from(argb >> 24) / 255.0,
+const fn filter_mode(filter: TextureFilter) -> wgpu::FilterMode {
+    match filter {
+        TextureFilter::Point => wgpu::FilterMode::Nearest,
+        TextureFilter::Linear => wgpu::FilterMode::Linear,
     }
 }
 
 fn resolve_scissor(
-    external: SrdExternalRenderState,
+    scissor: Option<ScissorRect>,
     size: [u32; 2],
 ) -> Result<Option<[u32; 4]>, RenderBackendError> {
-    if !external.scissor.enabled {
+    let Some(rectangle) = scissor else {
         return Ok(Some([0, 0, size[0], size[1]]));
-    }
-    let rectangle = external.scissor.rectangle;
+    };
     if rectangle.right < rectangle.left || rectangle.bottom < rectangle.top {
         return Err(RenderBackendError(format!(
             "WebGPU scissor is inverted: ({}, {})..({}, {})",
@@ -1705,6 +1577,15 @@ fn resolve_scissor(
     Ok(Some([left, top, right - left, bottom - top]))
 }
 
+fn argb_color(argb: u32) -> wgpu::Color {
+    wgpu::Color {
+        r: f64::from((argb >> 16) & 0xff) / 255.0,
+        g: f64::from((argb >> 8) & 0xff) / 255.0,
+        b: f64::from(argb & 0xff) / 255.0,
+        a: f64::from(argb >> 24) / 255.0,
+    }
+}
+
 fn align_up(value: u64, alignment: u64) -> Result<u64, RenderBackendError> {
     debug_assert!(alignment.is_power_of_two());
     value
@@ -1713,88 +1594,874 @@ fn align_up(value: u64, alignment: u64) -> Result<u64, RenderBackendError> {
         .ok_or_else(|| RenderBackendError("WebGPU aligned size overflow".into()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
+
+    #[test]
+    fn target_color_segments_snapshot_immediately_before_each_dependent_draw() {
+        let segments =
+            target_color_segments([false, true, true, false].into_iter()).collect::<Vec<_>>();
+
+        assert_eq!(segments, [0..1, 1..2, 2..4]);
+    }
+
+    #[test]
+    fn target_color_segments_preserve_empty_prefix_for_first_dependent_draw() {
+        let segments = target_color_segments([true, false].into_iter()).collect::<Vec<_>>();
+
+        assert_eq!(segments, [0..0, 0..2]);
+    }
+
     use super::*;
-    use crate::projection::identity_matrix4x4_game;
     use crate::reference_runtime::ReferenceLayerParent;
-    use crate::render::{CeylonDrawPacketPresetState, D3d9PrimitiveType, SrdQuadDraw};
     use crate::renderer::backend::render_to_composition;
+    use crate::renderer::pipeline::{
+        DrawOrder, DrawOrigin, SrdDraw, SrdQuad, SrdTransform, build_base_pose_image_draws,
+    };
     use crate::scene::ReferenceTarget;
 
     #[test]
-    fn translated_untextured_shader_renders_through_webgpu() {
+    fn recovered_material_formulas_execute_on_gpu() {
         std::thread::Builder::new()
-            .name("WebGPU shader smoke".into())
+            .name("native WebGPU material formula regression".into())
             .stack_size(16 * 1024 * 1024)
-            .spawn(translated_untextured_shader_renders_on_large_stack)
+            .spawn(recovered_material_formulas_execute_on_gpu_on_large_stack)
             .unwrap()
             .join()
             .unwrap();
     }
 
-    fn translated_untextured_shader_renders_on_large_stack() {
-        let Ok(mut backend) = WgpuSrdRenderBackend::new() else {
-            eprintln!("WebGPU adapter unavailable; skipping hardware smoke test");
-            return;
-        };
-        #[cfg(target_os = "macos")]
-        assert!(
-            backend.adapter_diagnostics().ends_with(" / Metal"),
-            "macOS preview must use Metal, got {}",
-            backend.adapter_diagnostics()
+    fn recovered_material_formulas_execute_on_gpu_on_large_stack() {
+        const RESULT_COUNT: u64 = 37;
+        const VECTOR_SIZE: u64 = 16;
+        let backend = WgpuSrdRenderBackend::new().unwrap();
+        let source = format!(
+            "{SIMPLE_SHADER}\n\
+             @group(0) @binding(7)\n\
+             var<storage, read_write> test_output: array<vec4<f32>, 37>;\n\
+             @compute @workgroup_size(1)\n\
+             fn test_material(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
+                 if id.x < 13u {{\n\
+                     test_output[id.x] = combine_textures(\n\
+                         vec4(0.2, 0.3, 0.4, 0.5),\n\
+                         vec4(0.8, 0.7, 0.6, 0.25),\n\
+                         id.x,\n\
+                     );\n\
+                 }} else if id.x < 37u {{\n\
+                     test_output[id.x] = photoshop_layer_blend(\n\
+                         vec4(0.2, 0.4, 0.7, 0.9),\n\
+                         vec4(0.9, 0.2, 0.45, 0.6),\n\
+                         id.x + 20u,\n\
+                     );\n\
+                 }}\n\
+             }}\n"
         );
+        backend
+            .device
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = backend
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("SRD multi-texture formula regression"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+        let pipeline = backend
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("SRD multi-texture formula regression"),
+                layout: None,
+                module: &module,
+                entry_point: Some("test_material"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        backend
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap();
+        if let Some(error) = pollster::block_on(backend.device.pop_error_scope()) {
+            panic!("multi-texture formula pipeline validation failed: {error}");
+        }
+
+        let byte_len = RESULT_COUNT * VECTOR_SIZE;
+        let output = backend.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SRD multi-texture formula output"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = backend.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SRD multi-texture formula readback"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let bind_group = backend
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("SRD multi-texture formula bind group"),
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: output.as_entire_binding(),
+                }],
+            });
+        let mut encoder = backend
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SRD multi-texture formula encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("SRD multi-texture formula pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(RESULT_COUNT as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, byte_len);
+        let submission = backend.queue.submit([encoder.finish()]);
+        let readback_slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        readback_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        backend
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })
+            .unwrap();
+        receiver.recv().unwrap().unwrap();
+        let mapped = readback_slice.get_mapped_range();
+        let actual = mapped
+            .chunks_exact(VECTOR_SIZE as usize)
+            .map(|vector| {
+                std::array::from_fn(|component| {
+                    let offset = component * 4;
+                    f32::from_le_bytes(vector[offset..offset + 4].try_into().unwrap())
+                })
+            })
+            .collect::<Vec<[f32; 4]>>();
+        drop(mapped);
+        readback.unmap();
+
+        let expected = [
+            [0.2, 0.3, 0.4, 0.5],
+            [0.2, 0.3, 0.4, 0.5],
+            [0.8, 0.7, 0.6, 0.25],
+            [0.35, 0.4, 0.45, 0.4375],
+            [1.0, 1.0, 1.0, 0.75],
+            [-0.6, -0.4, -0.2, 0.25],
+            [0.16, 0.21, 0.24, 0.250005],
+            [0.8, 0.7, 0.6, 0.5],
+            [0.2, 0.3, 0.4, 0.5],
+            [0.8, 0.7, 0.6, 0.250005],
+            [0.35, 0.4, 0.45, 0.5],
+            [0.2, 0.3, 0.4, 0.8],
+            [0.2, 0.3, 0.4, 0.4],
+            [0.62, 0.28, 0.55, 0.72],
+            [0.62, 0.4, 0.7, 0.9],
+            [0.2, 0.28, 0.55, 0.72],
+            [0.62, 0.28, 0.55, 0.72],
+            [0.2, 0.4, 0.7, 0.9],
+            [0.146_666_66, 0.16, 0.48, 0.86],
+            [0.14, 0.16, 0.37, 0.66],
+            [0.68, 0.46, 0.88, 0.96],
+            [0.68, 0.52, 0.88, 0.96],
+            [0.632, 0.472, 0.781, 0.936],
+            [0.296, 0.256, 0.682, 0.912],
+            [0.318_662_52, 0.3136, 0.6874, 0.905_842],
+            [0.584, 0.256, 0.658, 0.912],
+            [0.68, 0.16, 0.68, 0.96],
+            [0.68, 0.16, 0.64, 0.96],
+            [0.56, 0.4, 0.7, 0.9],
+            [0.68, 0.16, 0.88, 0.96],
+            [0.5, 0.28, 0.43, 0.54],
+            [0.524, 0.424, 0.592, 0.612],
+            [0.5, 0.28, 0.507_142_84, 0.72],
+            [0.14, 0.388, 0.76, 0.72],
+            [0.56, 0.22, 0.49, 0.72],
+            [0.234_285_71, 0.468_571_42, 0.82, 0.72],
+            [0.74, 0.52, 0.97, 1.0],
+        ];
+        assert_eq!(actual.len(), expected.len());
+        for (case, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            for (component, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+                assert!(
+                    (actual - expected).abs() <= 2.0e-5,
+                    "case {case} component {component}: expected {expected}, got {actual}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_multi_texture_mode_ignores_secondary_texture_on_gpu() {
+        std::thread::Builder::new()
+            .name("native WebGPU zero multi-texture regression".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(zero_multi_texture_mode_ignores_secondary_texture_on_gpu_on_large_stack)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn zero_multi_texture_mode_ignores_secondary_texture_on_gpu_on_large_stack() {
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
         backend.configure_composition_target([64, 64]).unwrap();
-        let color = [30, 20, 10, 255];
-        let vertex = |position| SrdRenderVertex {
+        let mut draw = solid_surface_draw(4, [255, 255, 255, 128], 0);
+        let sampler = TextureSamplerState {
+            address_u: TextureAddressMode::Clamp,
+            address_v: TextureAddressMode::Clamp,
+            min_filter: TextureFilter::Point,
+            mag_filter: TextureFilter::Point,
+        };
+        draw.state.material.textures = [
+            Some(SrdTextureBinding {
+                texture_index: 0,
+                sampler,
+            }),
+            Some(SrdTextureBinding {
+                texture_index: 1,
+                sampler,
+            }),
+            None,
+        ];
+        draw.state.profile = crate::renderer::pipeline::SimpleShaderProfile::surface(
+            crate::renderer::pipeline::SimpleTransformMode::TwoDimensional,
+            draw.state.material.textures,
+            0,
+            4,
+        )
+        .unwrap();
+        let texture_handle = SrdTextureSetHandle::new(1);
+        backend.texture_sets.insert(
+            texture_handle,
+            WgpuTextureSet::from_test_colors(
+                &backend.device,
+                &backend.queue,
+                [[255, 0, 0, 255], [0, 0, 0, 0]],
+            ),
+        );
+
+        render_to_composition(&mut backend, 0xff00_0000, |backend| {
+            render_surface_draw(
+                backend,
+                &draw,
+                &draw.geometry.vertices,
+                Some(texture_handle),
+            )
+        })
+        .unwrap();
+
+        let frame = backend.read_composition().unwrap();
+        let center = (32 * 64 + 32) * 4;
+        let actual = &frame.rgba[center..center + 4];
+        for (component, (actual, expected)) in actual.iter().zip([128u8, 0, 0, 255]).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 1,
+                "component {component}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_image_field_four_multiplies_base_alpha_by_secondary_red_on_gpu() {
+        std::thread::Builder::new()
+            .name("native WebGPU SrRmulA regression".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(
+                raw_image_field_four_multiplies_base_alpha_by_secondary_red_on_gpu_on_large_stack,
+            )
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn raw_image_field_four_multiplies_base_alpha_by_secondary_red_on_gpu_on_large_stack() {
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
+        backend.configure_composition_target([64, 64]).unwrap();
+        let mut draw = solid_surface_draw(4, [255; 4], 0);
+        let sampler = TextureSamplerState {
+            address_u: TextureAddressMode::Clamp,
+            address_v: TextureAddressMode::Clamp,
+            min_filter: TextureFilter::Point,
+            mag_filter: TextureFilter::Point,
+        };
+        draw.state.material.textures = [
+            Some(SrdTextureBinding {
+                texture_index: 0,
+                sampler,
+            }),
+            Some(SrdTextureBinding {
+                texture_index: 1,
+                sampler,
+            }),
+            None,
+        ];
+        draw.state.profile = crate::renderer::pipeline::SimpleShaderProfile::surface(
+            crate::renderer::pipeline::SimpleTransformMode::TwoDimensional,
+            draw.state.material.textures,
+            4,
+            4,
+        )
+        .unwrap();
+        let texture_handle = SrdTextureSetHandle::new(2);
+        backend.texture_sets.insert(
+            texture_handle,
+            WgpuTextureSet::from_test_colors(
+                &backend.device,
+                &backend.queue,
+                [[255, 0, 0, 255], [128, 0, 0, 255]],
+            ),
+        );
+
+        render_to_composition(&mut backend, 0xff00_0000, |backend| {
+            render_surface_draw(
+                backend,
+                &draw,
+                &draw.geometry.vertices,
+                Some(texture_handle),
+            )
+        })
+        .unwrap();
+
+        let frame = backend.read_composition().unwrap();
+        let center = (32 * 64 + 32) * 4;
+        let actual = &frame.rgba[center..center + 4];
+        for (component, (actual, expected)) in actual.iter().zip([128u8, 0, 0, 255]).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 1,
+                "component {component}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_surface_pipeline_renders_and_reads_back() {
+        std::thread::Builder::new()
+            .name("native WebGPU surface smoke".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(native_surface_pipeline_renders_and_reads_back_on_large_stack)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn native_surface_pipeline_renders_and_reads_back_on_large_stack() {
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
+        backend.configure_composition_target([64, 64]).unwrap();
+
+        let vertex = |position| SrdVertex {
             position,
-            primary_color: color,
+            // Independent SRD vertices carry semantic RGBA components.
+            primary_color: [255, 0, 0, 255],
             secondary_color: [0; 4],
             texture_coordinates: [[0.0; 2]; 2],
         };
-        let draw = EvidenceCompleteSrdDraw {
-            owner: ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+        let vertices = [
+            vertex([16.0, 16.0, 0.0]),
+            vertex([16.0, 48.0, 0.0]),
+            vertex([48.0, 16.0, 0.0]),
+            vertex([48.0, 48.0, 0.0]),
+        ];
+        let mut renderer_counter = 0;
+        let draw = SrdDraw {
+            origin: DrawOrigin {
+                owner: ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                    scene_index: 0,
+                    layer_index: 0,
+                }),
                 scene_index: 0,
                 layer_index: 0,
-            }),
-            scene_index: 0,
-            layer_index: 0,
-            node_index: 0,
-            is_2d: false,
-            renderer_layer_key: 0,
-            shader_key: *b"AACAABBAAAGAAAAAAA",
-            quad: SrdQuadDraw {
-                primitive_type: D3d9PrimitiveType::TriangleStrip,
-                vertices: [
-                    vertex([-0.5, -0.5, 0.5]),
-                    vertex([-0.5, 0.5, 0.5]),
-                    vertex([0.5, -0.5, 0.5]),
-                    vertex([0.5, 0.5, 0.5]),
-                ],
+                node_index: 0,
             },
-            packet: CeylonDrawPacketPresetState::default(),
-            fixed_constants: CeylonSrdFixedShaderConstants::initial_for_target(
-                identity_matrix4x4_game(),
-                [64, 64],
-            ),
-            blend: ceylon_d3d9_blend_preset(1),
-            raster: CeylonRasterState {
-                cull_mode_internal: 2,
-                ..CeylonRasterState::default()
+            order: DrawOrder {
+                renderer_layer_key: 0,
             },
-            depth: CeylonDepthState::from_draw_flags(0),
-            texture_bindings: [None; 3],
+            geometry: SrdQuad::new(vertices),
+            state: SrdDrawState::surface(
+                crate::renderer::pipeline::SrdSurfaceStateInput {
+                    transform: SrdTransform::identity_2d([64, 64]),
+                    transform_mode: crate::renderer::pipeline::SimpleTransformMode::TwoDimensional,
+                    render_preset: 0,
+                    image_field_0c: 0,
+                    image_field_10: 0,
+                    image_field_14: 0,
+                    image_field_18: 0,
+                    textures: [None; 3],
+                },
+                &mut renderer_counter,
+            )
+            .unwrap(),
         };
 
-        render_to_composition(&mut backend, 0xFF00_0000, |backend| {
-            backend.render_srd(&[draw], SrdExternalRenderState::without_scissor(), None)
+        render_to_composition(&mut backend, 0xff06_0b17, |backend| {
+            render_surface_draw(backend, &draw, &vertices, None)
         })
         .unwrap();
-        let readback = backend.read_composition().unwrap();
-        let center = ((32 * readback.width + 32) * 4) as usize;
-        assert_eq!(
-            &readback.rgba[center..center + 4],
-            &[color[2], color[1], color[0], color[3]]
+
+        let frame = backend.read_composition().unwrap();
+        assert_eq!(&frame.rgba[..4], &[6, 11, 23, 255]);
+        let center = (32 * 64 + 32) * 4;
+        assert_eq!(&frame.rgba[center..center + 4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn native_surface_pipeline_always_adds_secondary_vertex_color() {
+        std::thread::Builder::new()
+            .name("native WebGPU secondary vertex color regression".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(native_surface_pipeline_always_adds_secondary_vertex_color_on_large_stack)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn native_surface_pipeline_always_adds_secondary_vertex_color_on_large_stack() {
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
+        backend.configure_composition_target([64, 64]).unwrap();
+        let mut draw = solid_surface_draw(0, [64, 32, 16, 255], 0);
+        for vertex in &mut draw.geometry.vertices {
+            vertex.secondary_color = [40, 30, 20, 0];
+        }
+
+        render_to_composition(&mut backend, 0xff00_0000, |backend| {
+            render_surface_draw(backend, &draw, &draw.geometry.vertices, None)
+        })
+        .unwrap();
+
+        let frame = backend.read_composition().unwrap();
+        let center = (32 * 64 + 32) * 4;
+        let actual = &frame.rgba[center..center + 4];
+        for (component, (actual, expected)) in actual.iter().zip([104u8, 62, 36, 255]).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 1,
+                "component {component}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_preset_four_matches_ceylon_additive_blend_equation() {
+        std::thread::Builder::new()
+            .name("native WebGPU preset-4 blend regression".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(render_preset_four_matches_ceylon_additive_blend_equation_on_large_stack)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn render_preset_four_matches_ceylon_additive_blend_equation_on_large_stack() {
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
+        backend.configure_composition_target([64, 64]).unwrap();
+        let draw = solid_surface_draw(4, [128, 64, 32, 128], 0);
+
+        render_to_composition(&mut backend, 0xff14_283c, |backend| {
+            render_surface_draw(backend, &draw, &draw.geometry.vertices, None)
+        })
+        .unwrap();
+
+        let frame = backend.read_composition().unwrap();
+        let center = (32 * 64 + 32) * 4;
+        let actual = &frame.rgba[center..center + 4];
+        // Ceylon preset 4: src * SRCALPHA + dst * ONE. Because separate-alpha
+        // blending is disabled, the same factors apply to alpha.
+        let expected = [84u8, 72, 76, 255];
+        for (component, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 1,
+                "component {component}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_fennel_atlas_preserves_glyph_alpha() {
+        let actual = std::thread::Builder::new()
+            .name("native WebGPU opaque Fennel regression".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| render_fennel_solid_atlas_pixel_on_large_stack([255; 4]))
+            .unwrap()
+            .join()
+            .unwrap();
+
+        assert_eq!(actual, [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn transparent_fennel_atlas_preserves_composition_alpha() {
+        let actual = std::thread::Builder::new()
+            .name("native WebGPU transparent Fennel regression".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| render_fennel_solid_atlas_pixel_on_large_stack([255, 255, 255, 0]))
+            .unwrap()
+            .join()
+            .unwrap();
+
+        assert_eq!(actual, [6, 11, 23, 255]);
+    }
+
+    fn render_fennel_solid_atlas_pixel_on_large_stack(atlas_rgba: [u8; 4]) -> [u8; 4] {
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
+        backend.configure_composition_target([64, 64]).unwrap();
+        let vertex = |position| FennelRenderVertex {
+            position,
+            primary_color_bgra: [0, 255, 0, 255],
+            secondary_color_bgra: [0; 4],
+            texture_coordinates: [0.0; 2],
+        };
+        let vertices = [
+            vertex([16.0, 16.0, 0.0]),
+            vertex([16.0, 48.0, 0.0]),
+            vertex([48.0, 16.0, 0.0]),
+            vertex([48.0, 16.0, 0.0]),
+            vertex([16.0, 48.0, 0.0]),
+            vertex([48.0, 48.0, 0.0]),
+        ];
+        let state = SrdDrawState::fennel(
+            SrdTransform::identity_2d([64, 64]),
+            crate::renderer::pipeline::SimpleTransformMode::TwoDimensional,
         );
+        let atlas = FennelAtlasHandle::new(7);
+        let sampler = RuhunaSamplerState {
+            base: TextureSamplerState {
+                address_u: TextureAddressMode::Clamp,
+                address_v: TextureAddressMode::Clamp,
+                min_filter: TextureFilter::Point,
+                mag_filter: TextureFilter::Point,
+            },
+            mip_filter: TextureFilter::Point,
+            max_mip_level: 0,
+            max_anisotropy: 1,
+            mip_lod_bias_bits: 0,
+            border_color: 0,
+        };
+        backend.fennel_atlases.insert(
+            atlas,
+            WgpuFennelAtlas::from_test_texture(
+                WgpuTexture2d::solid_rgba(&backend.device, &backend.queue, atlas_rgba),
+                sampler,
+            ),
+        );
+
+        render_to_composition(&mut backend, 0xff06_0b17, |backend| {
+            backend.render_simple(SimpleDraw {
+                state,
+                topology: DrawTopology::TriangleList,
+                vertices: SimpleVertices::Format13(&vertices),
+                textures: SimpleTextureSource::Fennel {
+                    atlas,
+                    page_index: 0,
+                },
+                external: SrdExternalRenderState::without_scissor(),
+            })
+        })
+        .unwrap();
+
+        let frame = backend.read_composition().unwrap();
+        let center = (32 * 64 + 32) * 4;
+        frame.rgba[center..center + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn dynamic_surface_draws_sample_the_ordered_backdrop() {
+        std::thread::Builder::new()
+            .name("native WebGPU target-color regression".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(dynamic_surface_draws_sample_the_ordered_backdrop_on_large_stack)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn dynamic_surface_draws_sample_the_ordered_backdrop_on_large_stack() {
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
+        backend.configure_composition_target([64, 64]).unwrap();
+        let draws = [
+            solid_surface_draw(0, [51, 102, 204, 255], 0),
+            solid_surface_draw(34, [204, 51, 102, 128], 1),
+            solid_surface_draw(35, [26, 230, 77, 128], 2),
+        ];
+
+        render_to_composition(&mut backend, 0xff00_0000, |backend| {
+            for draw in &draws {
+                render_surface_draw(backend, draw, &draw.geometry.vertices, None)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let frame = backend.read_composition().unwrap();
+        let center = (32 * 64 + 32) * 4;
+        let actual = &frame.rgba[center..center + 4];
+        let expected = [77u8, 102, 140, 191];
+        for (component, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 2,
+                "component {component}: expected {expected}, got {actual}"
+            );
+        }
+
+        let first_draw = solid_surface_draw(37, [255, 0, 0, 255], 0);
+        render_to_composition(&mut backend, 0xff03_0507, |backend| {
+            render_surface_draw(backend, &first_draw, &first_draw.geometry.vertices, None)
+        })
+        .unwrap();
+        let frame = backend.read_composition().unwrap();
+        assert_eq!(&frame.rgba[center..center + 4], &[3, 5, 7, 255]);
+    }
+
+    #[test]
+    fn target_color_effect_modes_execute_on_gpu() {
+        std::thread::Builder::new()
+            .name("native WebGPU target-color effects".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(target_color_effect_modes_execute_on_gpu_on_large_stack)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn target_color_effect_modes_execute_on_gpu_on_large_stack() {
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
+        backend.configure_composition_target([64, 64]).unwrap();
+        let sample_offset = (32 * 64 + 31) * 4;
+
+        for (mode, alpha, expected) in [
+            (57, 255, 99u8),
+            (58, 255, 99),
+            (59, 255, 128),
+            (57, 128, 77),
+            (59, 128, 128),
+        ] {
+            let backdrop = solid_surface_rect_draw(0, [255; 4], 0, [32.5, 0.5, 64.5, 64.5]);
+            let effect = solid_surface_draw(mode, [255, 0, 0, alpha], 1);
+            render_to_composition(&mut backend, 0xff00_0000, |backend| {
+                for draw in [&backdrop, &effect] {
+                    render_surface_draw(backend, draw, &draw.geometry.vertices, None)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+            let frame = backend.read_composition().unwrap();
+            let actual = &frame.rgba[sample_offset..sample_offset + 4];
+            for (component, actual) in actual[..3].iter().enumerate() {
+                assert!(
+                    actual.abs_diff(expected) <= 2,
+                    "Gaussian mode {mode} alpha {alpha} component {component}: expected {expected}, got {actual}"
+                );
+            }
+            assert_eq!(actual[3], 255);
+        }
+
+        let backdrop = solid_surface_rect_draw(0, [255; 4], 0, [32.5, 0.5, 64.5, 64.5]);
+        let refraction = solid_surface_draw(60, [128, 128, 0, 255], 1);
+        render_to_composition(&mut backend, 0xff00_0000, |backend| {
+            for draw in [&backdrop, &refraction] {
+                render_surface_draw(backend, draw, &draw.geometry.vertices, None)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let frame = backend.read_composition().unwrap();
+        let refracted = &frame.rgba[sample_offset..sample_offset + 4];
+        for (component, actual) in refracted[..3].iter().enumerate() {
+            assert!(
+                actual.abs_diff(64) <= 2,
+                "refraction component {component}: expected 64, got {actual}"
+            );
+        }
+        assert_eq!(refracted[3], 255);
+
+        let backdrop = solid_surface_draw(0, [51, 102, 204, 255], 0);
+        let fill = solid_surface_draw(61, [0, 0, 0, 128], 1);
+        render_to_composition(&mut backend, 0xff00_0000, |backend| {
+            for draw in [&backdrop, &fill] {
+                render_surface_draw(backend, draw, &draw.geometry.vertices, None)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let frame = backend.read_composition().unwrap();
+        let center = (32 * 64 + 32) * 4;
+        let filled = &frame.rgba[center..center + 4];
+        for (component, (actual, expected)) in filled.iter().zip([153u8, 179, 230, 191]).enumerate()
+        {
+            assert!(
+                actual.abs_diff(expected) <= 2,
+                "color-fill component {component}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn renders_complete_dynamic_shader_fixture() {
+        std::thread::Builder::new()
+            .name("native WebGPU dynamic fixture".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(renders_complete_dynamic_shader_fixture_on_large_stack)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn renders_complete_dynamic_shader_fixture_on_large_stack() {
+        let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(std::path::PathBuf::from) else {
+            eprintln!("skipping: GAME_DATA_CORPUS is not set");
+            return;
+        };
+        let document = crate::document::EditorDocument::load(
+            root.join("surfboard/shader/chu_ui_shader_extparam_00_v12.srd"),
+        )
+        .unwrap();
+        let target_size = [1920, 1080];
+        let snapshot = crate::game_host::WorldSnapshot::new(
+            crate::transform::Affine3x4::IDENTITY,
+            crate::game_host::SRD_RENDERER_INITIAL_LAYER_KEY,
+            Some(crate::game_host::ProjectTargetSnapshot::new(
+                crate::projection::identity_matrix4x4_game(),
+                target_size,
+            )),
+            crate::projection::identity_matrix4x4_game(),
+            target_size,
+        );
+        let mut draws =
+            build_base_pose_image_draws(&document.project, &document.textures, 0, snapshot)
+                .unwrap();
+        assert_eq!(draws.len(), 54);
+        let mut dynamic_modes = draws
+            .iter()
+            .map(|draw| draw.state.profile.blend_mode.get())
+            .filter(|mode| *mode >= 33)
+            .collect::<Vec<_>>();
+        dynamic_modes.sort_unstable();
+        dynamic_modes.dedup();
+        assert_eq!(dynamic_modes, (34..=58).collect::<Vec<_>>());
+        // The fixture's authored layer transform depends on a game-only host. Arrange the
+        // recovered material inputs in a deterministic gallery so every mode reaches pixels.
+        for (index, draw) in draws.iter_mut().enumerate() {
+            let left = (index % 9) as f32 * 200.0 + 0.5;
+            let top = (index / 9) as f32 * 180.0 + 0.5;
+            let positions = [
+                [left, top, 0.0],
+                [left, top + 160.0, 0.0],
+                [left + 180.0, top, 0.0],
+                [left + 180.0, top + 160.0, 0.0],
+            ];
+            for (vertex, position) in draw.geometry.vertices.iter_mut().zip(positions) {
+                vertex.position = position;
+                vertex.primary_color = [255; 4];
+                vertex.secondary_color = [0; 4];
+            }
+            draw.state.transform = SrdTransform::identity_2d(target_size);
+        }
+
+        let required_texture_indices = draws.iter().flat_map(|draw| {
+            draw.state
+                .material
+                .textures
+                .iter()
+                .flatten()
+                .map(|binding| binding.texture_index)
+        });
+        let texture_sources =
+            SrdTextureSourceSet::load_required(&root, &document.textures, required_texture_indices)
+                .unwrap();
+        let mut backend = WgpuSrdRenderBackend::new().unwrap();
+        let textures = backend.upload_srd_textures(texture_sources).unwrap();
+        backend.configure_composition_target(target_size).unwrap();
+        render_to_composition(&mut backend, 0xff06_0b17, |backend| {
+            for draw in &draws {
+                render_surface_draw(backend, draw, &draw.geometry.vertices, Some(textures))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let frame = backend.read_composition().unwrap();
+        assert!(
+            frame
+                .rgba
+                .chunks_exact(4)
+                .any(|pixel| pixel != [6, 11, 23, 255]),
+            "dynamic shader fixture rendered only the clear color"
+        );
+    }
+
+    fn render_surface_draw(
+        backend: &mut WgpuSrdRenderBackend,
+        draw: &SrdDraw,
+        vertices: &[SrdVertex],
+        textures: Option<SrdTextureSetHandle>,
+    ) -> Result<(), RenderBackendError> {
+        backend.render_simple(SimpleDraw {
+            state: draw.state,
+            topology: DrawTopology::TriangleStrip,
+            vertices: SimpleVertices::Format14(vertices),
+            textures: SimpleTextureSource::Srd(textures),
+            external: SrdExternalRenderState::without_scissor(),
+        })
+    }
+
+    fn solid_surface_draw(preset: i32, rgba: [u8; 4], node_index: usize) -> SrdDraw {
+        solid_surface_rect_draw(preset, rgba, node_index, [0.5, 0.5, 64.5, 64.5])
+    }
+
+    fn solid_surface_rect_draw(
+        preset: i32,
+        rgba: [u8; 4],
+        node_index: usize,
+        rectangle: [f32; 4],
+    ) -> SrdDraw {
+        let vertex = |position| SrdVertex {
+            position,
+            primary_color: rgba,
+            secondary_color: [0; 4],
+            texture_coordinates: [[0.0; 2]; 2],
+        };
+        let vertices = [
+            vertex([rectangle[0], rectangle[1], 0.0]),
+            vertex([rectangle[0], rectangle[3], 0.0]),
+            vertex([rectangle[2], rectangle[1], 0.0]),
+            vertex([rectangle[2], rectangle[3], 0.0]),
+        ];
+        let mut renderer_counter = 0;
+        SrdDraw {
+            origin: DrawOrigin {
+                owner: ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                    scene_index: 0,
+                    layer_index: 0,
+                }),
+                scene_index: 0,
+                layer_index: 0,
+                node_index,
+            },
+            order: DrawOrder {
+                renderer_layer_key: node_index as u32,
+            },
+            geometry: SrdQuad::new(vertices),
+            state: SrdDrawState::surface(
+                crate::renderer::pipeline::SrdSurfaceStateInput {
+                    transform: SrdTransform::identity_2d([64, 64]),
+                    transform_mode: crate::renderer::pipeline::SimpleTransformMode::TwoDimensional,
+                    render_preset: preset,
+                    image_field_0c: 0,
+                    image_field_10: 0,
+                    image_field_14: 0,
+                    image_field_18: 0,
+                    textures: [None; 3],
+                },
+                &mut renderer_counter,
+            )
+            .unwrap(),
+        }
     }
 }

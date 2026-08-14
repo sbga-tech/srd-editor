@@ -16,7 +16,7 @@
 
 ## FirstCalcMatrix 边界
 
-`build_evidence_complete_initial_image_draws` 要求调用者显式提供无默认值的 `SrdHostDrawContext`，其中分别保存 `FirstCalcMatrix`、可选的 renderer project target、最终接收 target Camera 的 `Projection*View` 与 target screen size。语料测试对命名 target 与接收 target 都传 identity、screen size 传 `1920x1080`，只是在独立宿主输入固定时验证确定结果；它不声称原游戏任意调用现场都使用这些值。对已审计的 Advertise/Common，空 `TargetScene` 精确 lookup 已证明产生 `renderer_project_target=None`；独立 SRD 的通用预览仍不能脱离宿主上下文自动选择接收 target。详见 [`render-visibility-culling.md`](render-visibility-culling.md)。
+`build_base_pose_image_draws` 要求调用者显式提供无默认值的 `WorldSnapshot`，其中分别保存 `FirstCalcMatrix`、可选的 renderer project target、最终接收 target Camera 的 `Projection*View` 与 target screen size。语料测试对命名 target 与接收 target 都传 identity、screen size 传 `1920x1080`，只是在独立宿主输入固定时验证确定结果；它不声称原游戏任意调用现场都使用这些值。对已审计的 Advertise/Common，空 `TargetScene` 精确 lookup 已证明产生 `renderer_project_target=None`；独立 SRD 的通用预览仍不能脱离宿主上下文自动选择接收 target。详见 [`render-visibility-culling.md`](render-visibility-culling.md)。
 
 编辑器未来的 fit-to-view 属于 Composition 显示变换，必须与这个游戏根矩阵分层保存。HiDPI 只改变窗口/backbuffer 的物理像素和 ImGui 的逻辑到物理比例，也不能进入 SRD 的 `FirstCalcMatrix`。
 
@@ -40,11 +40,11 @@ draw 同时携带精确 packet、VS `c0..c13`/PS `c0` 固定常量、blend、ras
 
 - 遇到 CAST 特殊矩阵 flags `0x0007_0000` 时返回错误；
 - 排除 `SrTextCast`；
-- 只产出 CREF/CRE1 绑定、sampler 与 exact shader pair 都已闭环的纹理 draw；
-- 暂不产出没有已注册 VS/PS bytecode 的 shader key；
+- 只产出已解析 CREF/CRE1 绑定与 sampler 的纹理 draw；
+- 保留 packet 与 texture presence，即使由它们派生的 shader key 没有已注册 VS/PS，最终由 backend 在提交时拒绝；
 - 本页旧的窄 builder 仍只描述首个 Image fixture；统一 runtime builder 已另外接入 CSLI、CNUM 与引用层递归，见各自证据页。
 
-因此“没有产出”不等于对象不可渲染，只表示它尚未到达本项目要求的完整证据门槛。本页 fixture 测试断言 draw 数量、节点、二维 shader key、`screenParam`、四顶点、两组顶点色、color-write 和深度状态。
+因此“没有产出”不等于对象不可渲染，只表示它仍在上述显式排除范围。本页 fixture 测试断言 draw 数量、节点、提交时派生的二维 shader key、`screenParam`、四顶点、两组顶点色、color-write 和深度状态。
 
 ## 实际 D3D9Ex 提交与像素验证
 

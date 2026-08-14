@@ -45,7 +45,7 @@ screenParam = [source_width * 0.5, source_height * 0.5, 0, 0]
 
 三维 sibling 的 `c10..c13` 则是 target Camera 的 `Projection*View`。D3D9Ex renderer 因而按 draw 的 `is_2d` 选择上传一个 `c10` screenParam 或四个 `c10..c13` matrix registers，不把二者混用。
 
-独立 SRD 不能证明 filter source 尺寸必然等于窗口 present size 或 SCN 尺寸。`SrdHostDrawContext` 因此要求宿主显式提供 `target_screen_size`；编辑器 UI 和 smoke CLI 也把它与 Camera present size 分开输入，不进行静默推断。
+独立 SRD 不能证明 filter source 尺寸必然等于窗口 present size 或 SCN 尺寸。`WorldSnapshot` 因此要求宿主显式提供 `target_screen_size`；编辑器 UI 和 smoke CLI 也把它与 Camera present size 分开输入，不进行静默推断。
 
 ## 精确 bytecode 与实机结果
 

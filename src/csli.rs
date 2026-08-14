@@ -1,6 +1,5 @@
 use std::fmt;
 
-use crate::render::{SrdQuadDraw, SrdRenderVertex};
 use crate::vtbf::{Block, Property, SrdFile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,22 +398,6 @@ pub fn slice_vertex_colors(
         );
         let secondary = add_color_saturating_game(additive_tint, cell_add);
         SliceVertexColors { primary, secondary }
-    }))
-}
-
-pub fn build_slice_render_quad(
-    quad: SliceQuad,
-    colors: [SliceVertexColors; 4],
-    texture_coordinates: [[f32; 2]; 4],
-) -> SrdQuadDraw {
-    SrdQuadDraw::new(std::array::from_fn(|vertex_index| SrdRenderVertex {
-        position: quad.positions[vertex_index],
-        primary_color: colors[vertex_index].primary,
-        secondary_color: colors[vertex_index].secondary,
-        texture_coordinates: [
-            texture_coordinates[vertex_index],
-            texture_coordinates[vertex_index],
-        ],
     }))
 }
 
@@ -948,29 +931,6 @@ mod tests {
         assert_eq!(colors[3].primary, [255, 255, 255, 255]);
         assert_eq!(colors[0].secondary, [15, 26, 37, 48]);
         assert_eq!(colors[3].secondary, [15, 26, 37, 48]);
-
-        let texture_coordinates = [[0.1, 0.2], [0.1, 0.8], [0.9, 0.2], [0.9, 0.8]];
-        let draw = build_slice_render_quad(
-            SliceQuad {
-                cell_index: 3,
-                positions: [
-                    [1.0, 2.0, 3.0],
-                    [4.0, 5.0, 6.0],
-                    [7.0, 8.0, 9.0],
-                    [10.0, 11.0, 12.0],
-                ],
-                normalized_cell_coordinates: [[0.0; 2]; 4],
-            },
-            colors,
-            texture_coordinates,
-        );
-        assert_eq!(draw.vertices[2].position, [7.0, 8.0, 9.0]);
-        assert_eq!(draw.vertices[2].primary_color, [200; 4]);
-        assert_eq!(draw.vertices[2].secondary_color, [15, 26, 37, 48]);
-        assert_eq!(
-            draw.vertices[2].texture_coordinates,
-            [texture_coordinates[2]; 2]
-        );
     }
 
     #[test]

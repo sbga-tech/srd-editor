@@ -1056,7 +1056,6 @@ fn theme(_: &Editor) -> Theme {
 }
 
 pub fn run() -> iced::Result {
-    crate::renderer::prepare_process_environment();
     iced::application(Editor::new, Editor::update, Editor::view)
         .title(title)
         .subscription(Editor::subscription)
@@ -1077,7 +1076,7 @@ mod tests {
     use std::sync::mpsc::{self, Sender};
 
     use crate::renderer::PreviewRenderer;
-    use crate::srd_draw::{FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput};
+    use crate::renderer::{FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput};
 
     use super::*;
 

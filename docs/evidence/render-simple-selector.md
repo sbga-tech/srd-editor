@@ -218,3 +218,5 @@ Rust 已实现：
 - 完整 data 中 82 个 Simple key 的回归。
 
 `SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包、双 UV/顶点色公式、完整 collection 的无 D3DX bytecode及其 runtime key 表均已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。尚未闭环的是其余 shape/context feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions。shadow provider 现在可以显式组合，但不能在没有场景 graph 证据时默认附加到独立 SRD 预览。
+
+编辑器原生渲染器不再把 selector key 作为 draw contract，也不以 collection 中是否存在某个键来决定能否绘制。已从 Cg/bytecode 与 D3D9 像素回归闭环的可见 SimpleShader 子集现收敛为 `SimpleShaderProfile`：format 13/14 declaration、2D/3D transform、0/1/2 个连续纹理槽、MultiTex0 `0/6/9/10/11/12`、surface mode `0/9` 与 render preset `0..21/33..61`。其中影响 shader 程序的字段作为 WebGPU pipeline constants；矩阵、材质数值、alpha reference 与 sampler 仍为 draw 数据。未闭环的 selector positions、第三纹理槽和 render preset `22..32` 被显式拒绝，不以通用分支猜测。

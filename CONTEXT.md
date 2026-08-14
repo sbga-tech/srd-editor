@@ -43,3 +43,11 @@ _Avoid_: Motion, CAST
 **Base Pose**:
 The scene state obtained from serialized CAST transforms when no animation preset is active.
 _Avoid_: Empty animation
+
+**Simple Shader Profile**:
+The normalized Ceylon SimpleShader feature values selected for one CAST draw after applying SRD runtime state and proven renderer invariants. It excludes numeric shader inputs and scene/pass features that an independent SRD cannot provide.
+_Avoid_: Shader family, WGSL variant, compact key
+
+**Host Render Context**:
+Scene- or pass-owned state combined with a CAST draw but not derivable from an independent SRD, such as target dimensions, projection, fog, shadows, distance outputs, or special base environments.
+_Avoid_: SRD shader flag

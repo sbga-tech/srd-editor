@@ -1,20 +1,22 @@
 # SRD runtime shader-state audit boundary
 
-This audit separates three facts that must not be conflated:
+> **历史审计记录。** 本页数字来自已删除的 compact-key/D3D9 compatibility implementation。审计结果继续作为 game corpus 证据；工具、runtime key table 与 D3D9 backend 不再属于当前编辑器。
 
-1. the exact compact key selected by the currently proven ShapeEnv inputs;
-2. membership in the game's 82-key `SimpleShaderVSSimpleShaderPS` collection;
-3. availability of the corresponding verified bytecode in the editor.
+该审计曾区分三个不能混淆的事实：
 
-`src/bin/srd-runtime-state-audit.rs` scans all 91 files under the local
-`surfboard` corpus. Its default mode builds a conservative upper bound for
+1. 当时已证明的 ShapeEnv 输入所选择的精确 compact key；
+2. 该 key 是否属于游戏的 82-key `SimpleShaderVSSimpleShaderPS` collection；
+3. 对应 bytecode 当时是否已经封装进兼容后端。
+
+The deleted `src/bin/srd-runtime-state-audit.rs` scanned all 91 files under the
+local `surfboard` corpus. Its default mode built a conservative upper bound for
 Image/Slice/Number texture-presence changes: an unanimated CREF/CRE1 channel
-keeps its exact initial presence, while an animated channel may be absent or
-may use any valid texture referenced by that channel. It also includes both
-the authored layer dimension and every independently copied RefCast dimension
+kept its exact initial presence, while an animated channel could be absent or
+use any valid texture referenced by that channel. It also included both the
+authored layer dimension and every independently copied RefCast dimension
 recorded by `ProjectRuntime`.
 
-The current complete corpus reports:
+The complete-corpus run reported:
 
 ```text
 files=91
@@ -90,21 +92,14 @@ recorded rather than treated as a failure: successful packet/shader submission
 and final visibility are separate facts, and later/failed-alpha pixels must not
 be invented to make a diagnostic nonzero.
 
-Advertise `ANMS[10] AS_title_in`, frame `0`, contains ten dual-texture Image
-draws at `LAYR[3]/NODE[41,44,47,52,54,55,56,57,60,62]`. Three select
-`AAEBABBAADIIEAAAAA` (MultiTex0 value 9), seven select
-`AAEBABBAADIAAAAAAA`; every draw binds both stage 0 and stage 1 from TEXL.
-At frame `30`, the D3D9Ex smoke submits only these ten sources and changes all
-2,073,600 Composition RGB pixels before and after ResetEx. This proves the
-shipped dual-texture packet, both TEXL bindings, verified collection shaders
-and merged format-14 submission reach the GPU without inventing an override.
+Advertise `ANMS[10] AS_title_in` 包含十个 dual-texture Image draw：
+`LAYR[3]/NODE[41,44,47,52,54,55,56,57,60,62]`。早期 audit 正确记录了每条 draw 都绑定 TEXL stage 0/1，但错误地把七条 CIMG `0x4C = 4` 解释成 MultiTex0 `0`；实机 `srd-renderer-20260814T235050494Z.trace` 已用 mask draw 的 shader `0x2f6273f0` 和 `mul r0.w, r0, r1.x` 证明它们实际为 MultiTex0 `12`。其余三条原始值 `1` 仍为 MultiTex0 `9`。
 
-The unified runtime draw builder no longer drops Image, Slice, or Number draws
-merely because a shader key is not packaged or packet stencil is enabled. It
-preserves the exact key and packet so audits can observe the state. The D3D9Ex
-backend still rejects an unregistered key, and the merged submission planner
-still rejects stencil sequence state whose renderer lifetime is not closed;
-neither path silently substitutes or merges an unsupported state.
+修正后，`NODE[47,52,54,55,56,57,62]` 选择 `MultiplyAlphaBySecondaryRed(12)`；`NODE[41,44,60]` 选择 `ReplaceWithSecondary(9)`。frame `30` 的 WebGPU integration regression 同时固定十条 source、双 texture binding 与这组模式分布；frame `39` 的 native framebuffer delta 只覆盖 CHUNITHM/Mate/M/a/t/e/illumination mask 轮廓，不再接受覆盖整个 quad 的旧输出。
+
+当时的统一 runtime draw builder 已不因派生 key 未封装或 packet stencil 启用而直接丢弃 Image、Slice 或 Number draw；它保留 authoritative packet 与 texture binding，再由 audit/backend 在使用点派生 compact key。历史 D3D9Ex backend 仍拒绝未注册 key，merged submission planner 仍拒绝 renderer lifetime 尚未闭合的 stencil sequence state；两条路径都不会静默替换或合并 unsupported state。
+
+当前原生 pipeline 不再派生 compact key。它直接把同一批已证明字段编译成 `SrdDrawState`、geometry 与 WGSL material 参数；原生 contract 接受 render preset `0..21` 与 target-color preset `33..61`。后者保留 CATR override、source order 与 `textureTargetColor` snapshot，完整语料实际出现的 `34..58`、`60` 均通过编译；shader ExtParam fixture 另覆盖 54 组真实无纹理/有纹理 material 状态，测试只把未闭环的宿主 transform 换成确定性 gallery。未证明的 `22..32` 与未知 scene/pass host context 仍返回带 CAST 来源的错误，而不是映射到近似 shader variant。
 
 The complete collection packaging and its HAL evidence are documented in
 [`render-shader-bytecode.md`](render-shader-bytecode.md). The unresolved work is

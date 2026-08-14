@@ -7,10 +7,10 @@ use crate::document::{EditorDocument, SaveReport, TransformComponent, display_sr
 use crate::image::SrdTextureBindingSource;
 use crate::reference_runtime::{ProjectRuntime, ReferenceLayerParent};
 use crate::renderer::PreviewCastSelection;
+use crate::renderer::{FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput};
 use crate::scene::{
     CastClassification, Layer, Project, RawTransform, ReferenceTarget, Scene, SrCastKind,
 };
-use crate::srd_draw::{FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput};
 use crate::transform::SpatialTransform;
 
 use super::animate::{AnimateAction, AnimateHistory, AnimateState, Workspace};

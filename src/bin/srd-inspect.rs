@@ -4,13 +4,9 @@ use std::path::PathBuf;
 
 use srd_editor::animation::{KeyData, Track};
 use srd_editor::document::{EditorDocument, display_srd_name};
-use srd_editor::projection::{
-    identity_matrix4x4_game, mul_matrix4x4_game, project_point_to_screen_game, viewport_matrix_game,
-};
-use srd_editor::srd_draw::{
-    SrdHostDrawContext, SrdRendererProjectTargetContext,
-    build_evidence_complete_animation_set_image_draws, build_evidence_complete_initial_image_draws,
-};
+use srd_editor::game_host::{ProjectTargetSnapshot, WorldSnapshot};
+use srd_editor::projection::identity_matrix4x4_game;
+use srd_editor::renderer::{build_animation_set_image_draws, build_base_pose_image_draws};
 use srd_editor::transform::Affine3x4;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -149,10 +145,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if let Some(draw_selection) = draw_selection {
         let screen_size = draw_selection.screen_size();
-        let host = SrdHostDrawContext::new(
+        let host = WorldSnapshot::new(
             Affine3x4::IDENTITY,
-            srd_editor::render::SRD_RENDERER_INITIAL_LAYER_KEY,
-            Some(SrdRendererProjectTargetContext::new(
+            srd_editor::game_host::SRD_RENDERER_INITIAL_LAYER_KEY,
+            Some(ProjectTargetSnapshot::new(
                 identity_matrix4x4_game(),
                 screen_size,
             )),
@@ -160,18 +156,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             screen_size,
         );
         let draws = match draw_selection {
-            DrawSelection::Initial { .. } => build_evidence_complete_initial_image_draws(
-                &document.project,
-                &document.textures,
-                0,
-                host,
-            )?,
+            DrawSelection::Initial { .. } => {
+                build_base_pose_image_draws(&document.project, &document.textures, 0, host)?
+            }
             DrawSelection::AnimationSet { index, frame, .. } => {
                 let animation_set = document.project.scenes[0]
                     .animation_sets
                     .get(index)
                     .ok_or("animation-set draw index is outside SCN[0]")?;
-                build_evidence_complete_animation_set_image_draws(
+                build_animation_set_image_draws(
                     &document.project,
                     &document.textures,
                     0,
@@ -189,80 +182,49 @@ fn main() -> Result<(), Box<dyn Error>> {
             draws.len()
         );
         for (draw_index, draw) in draws.iter().enumerate() {
-            let layer = &document.project.scenes[draw.scene_index].layers[draw.layer_index];
-            let node = &layer.nodes[draw.node_index];
+            let layer =
+                &document.project.scenes[draw.origin.scene_index].layers[draw.origin.layer_index];
+            let node = &layer.nodes[draw.origin.node_index];
             let min_x = draw
-                .quad
+                .geometry
                 .vertices
                 .iter()
                 .map(|vertex| vertex.position[0])
                 .fold(f32::INFINITY, f32::min);
             let min_y = draw
-                .quad
+                .geometry
                 .vertices
                 .iter()
                 .map(|vertex| vertex.position[1])
                 .fold(f32::INFINITY, f32::min);
             let max_x = draw
-                .quad
+                .geometry
                 .vertices
                 .iter()
                 .map(|vertex| vertex.position[0])
                 .fold(f32::NEG_INFINITY, f32::max);
             let max_y = draw
-                .quad
+                .geometry
                 .vertices
                 .iter()
                 .map(|vertex| vertex.position[1])
                 .fold(f32::NEG_INFINITY, f32::max);
-            let textures = draw.texture_bindings.map(|binding| {
+            let textures = draw.state.material.textures.map(|binding| {
                 binding
                     .map(|binding| binding.texture_index as isize)
                     .unwrap_or(-1)
             });
-            let projected_bbox = if draw.is_2d {
-                None
-            } else {
-                let projection_world = mul_matrix4x4_game(
-                    &draw.fixed_constants.vertex_c10_c13_projection_view,
-                    &draw.fixed_constants.vertex_c0_c3_world,
-                );
-                let screen_matrix = mul_matrix4x4_game(
-                    &viewport_matrix_game(screen_size[0] as i32, screen_size[1] as i32),
-                    &projection_world,
-                );
-                let projected = draw
-                    .quad
-                    .vertices
-                    .map(|vertex| project_point_to_screen_game(vertex.position, &screen_matrix));
-                Some(projected.iter().fold(
-                    [
-                        f32::INFINITY,
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                        f32::NEG_INFINITY,
-                    ],
-                    |mut bounds, point| {
-                        bounds[0] = bounds[0].min(point[0]);
-                        bounds[1] = bounds[1].min(point[1]);
-                        bounds[2] = bounds[2].max(point[0]);
-                        bounds[3] = bounds[3].max(point[1]);
-                        bounds
-                    },
-                ))
-            };
             println!(
-                "  DRAW[{draw_index}] layer={}:{} node={}:{} renderer_key={:#010x} is_2d={} preset={} shader={} bbox=({min_x},{min_y})..({max_x},{max_y}) projected_bbox={projected_bbox:?} color0={:02X?} color1={:02X?} textures={textures:?}",
-                draw.layer_index,
+                "  DRAW[{draw_index}] layer={}:{} node={}:{} renderer_key={:#010x} profile={:?} pipeline={:?} bbox=({min_x},{min_y})..({max_x},{max_y}) color0={:02X?} color1={:02X?} textures={textures:?}",
+                draw.origin.layer_index,
                 display_srd_name(&layer.name),
-                draw.node_index,
+                draw.origin.node_index,
                 display_srd_name(node.name.as_deref().unwrap_or_default()),
-                draw.renderer_layer_key,
-                draw.is_2d,
-                draw.packet.table_preset_id(),
-                String::from_utf8_lossy(&draw.shader_key),
-                draw.quad.vertices[0].primary_color,
-                draw.quad.vertices[0].secondary_color,
+                draw.order.renderer_layer_key,
+                draw.state.profile,
+                draw.state.pipeline,
+                draw.geometry.vertices[0].primary_color,
+                draw.geometry.vertices[0].secondary_color,
             );
         }
     }

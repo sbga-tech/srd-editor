@@ -32,7 +32,7 @@ SrProject pointer != null
 
 ## Common 回归
 
-Rust `SrdHostDrawContext` 现在分别保存：
+Rust `WorldSnapshot` 现在分别保存：
 
 - 可选的 renderer project target；
 - 最终接收 target 的 `Projection*View`；

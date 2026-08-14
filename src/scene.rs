@@ -801,18 +801,19 @@ impl Layer {
         let hierarchy = self.build_hierarchy()?;
         let mut worlds = vec![Affine3x4::IDENTITY; count];
         let mut visited = vec![false; count];
+        let source = WorldMatrixSource {
+            is_2d,
+            flip_y,
+            transforms,
+            offsets,
+            children: &hierarchy.children,
+        };
+        let mut output = WorldMatrixOutput {
+            worlds: &mut worlds,
+            visited: &mut visited,
+        };
         for &root in &hierarchy.roots {
-            compose_node(
-                root,
-                root_matrix,
-                is_2d,
-                flip_y,
-                transforms,
-                offsets,
-                &hierarchy.children,
-                &mut worlds,
-                &mut visited,
-            )?;
+            compose_node(root, root_matrix, &source, &mut output)?;
         }
         if let Some(index) = visited.iter().position(|value| !value) {
             return Err(SceneError(format!(
@@ -891,31 +892,43 @@ impl Layer {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct WorldMatrixSource<'a> {
+    is_2d: bool,
+    flip_y: bool,
+    transforms: &'a [SpatialTransform],
+    offsets: &'a [[f32; 2]],
+    children: &'a [Vec<usize>],
+}
+
+struct WorldMatrixOutput<'a> {
+    worlds: &'a mut [Affine3x4],
+    visited: &'a mut [bool],
+}
+
 fn compose_node(
     index: usize,
     parent_world: Affine3x4,
-    is_2d: bool,
-    flip_y: bool,
-    transforms: &[SpatialTransform],
-    offsets: &[[f32; 2]],
-    children: &[Vec<usize>],
-    worlds: &mut [Affine3x4],
-    visited: &mut [bool],
+    source: &WorldMatrixSource<'_>,
+    output: &mut WorldMatrixOutput<'_>,
 ) -> Result<(), SceneError> {
-    if visited[index] {
+    let WorldMatrixSource {
+        is_2d,
+        flip_y,
+        transforms,
+        offsets,
+        children,
+    } = source;
+    if output.visited[index] {
         return Err(SceneError(format!(
             "NODE {index} is reached more than once in the CAST hierarchy"
         )));
     }
-    visited[index] = true;
-    let local = build_local_matrix(&transforms[index], is_2d, flip_y, offsets[index]);
+    output.visited[index] = true;
+    let local = build_local_matrix(&transforms[index], *is_2d, *flip_y, offsets[index]);
     let world = parent_world.mul_game(local);
-    worlds[index] = world;
+    output.worlds[index] = world;
     for &child in &children[index] {
-        compose_node(
-            child, world, is_2d, flip_y, transforms, offsets, children, worlds, visited,
-        )?;
+        compose_node(child, world, source, output)?;
     }
     Ok(())
 }
@@ -1034,7 +1047,7 @@ fn read_runtime_color(
     if bytes.len() < 4 {
         return Err(SceneError(format!("{label} has fewer than four bytes")));
     }
-    Ok([bytes[3], bytes[2], bytes[1], bytes[0]])
+    Ok([bytes[1], bytes[2], bytes[3], bytes[0]])
 }
 
 fn read_f32_vector<const N: usize>(

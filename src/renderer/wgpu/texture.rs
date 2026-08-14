@@ -1,7 +1,7 @@
 use crate::dds::DdsDescriptor;
-use crate::renderer::assets::{FennelAtlasSourceSet, SrdTextureSourceSet};
 use crate::renderer::backend::RenderBackendError;
-use crate::ruhuna::RuhunaD3d9SamplerState;
+use crate::renderer::resources::{FennelAtlasSourceSet, SrdTextureSourceSet};
+use crate::ruhuna::RuhunaSamplerState;
 
 pub(super) struct WgpuTexture2d {
     #[allow(dead_code)]
@@ -15,7 +15,7 @@ pub(super) struct WgpuTextureSet {
 
 pub(super) struct WgpuFennelAtlas {
     pages: Vec<WgpuTexture2d>,
-    sampler: RuhunaD3d9SamplerState,
+    sampler: RuhunaSamplerState,
 }
 
 impl WgpuTexture2d {
@@ -69,9 +69,9 @@ impl WgpuTexture2d {
         Ok(Self { texture, view })
     }
 
-    pub fn opaque_black(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+    pub fn solid_rgba(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4]) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Ceylon unbound-texture fallback"),
+            label: Some("Ceylon 1x1 texture"),
             size: wgpu::Extent3d {
                 width: 1,
                 height: 1,
@@ -91,7 +91,7 @@ impl WgpuTexture2d {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &[0, 0, 0, 255],
+            &rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4),
@@ -105,6 +105,26 @@ impl WgpuTexture2d {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self { texture, view }
+    }
+
+    pub fn opaque_black(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        Self::solid_rgba(device, queue, [0, 0, 0, 255])
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+impl WgpuTextureSet {
+    pub(super) fn from_test_colors(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        colors: [[u8; 4]; 2],
+    ) -> Self {
+        Self {
+            textures: colors
+                .into_iter()
+                .map(|color| Some(WgpuTexture2d::solid_rgba(device, queue, color)))
+                .collect(),
+        }
     }
 }
 
@@ -159,8 +179,18 @@ impl WgpuFennelAtlas {
         self.pages.get(page)
     }
 
-    pub fn sampler(&self) -> RuhunaD3d9SamplerState {
+    pub fn sampler(&self) -> RuhunaSamplerState {
         self.sampler
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+impl WgpuFennelAtlas {
+    pub(super) fn from_test_texture(texture: WgpuTexture2d, sampler: RuhunaSamplerState) -> Self {
+        Self {
+            pages: vec![texture],
+            sampler,
+        }
     }
 }
 

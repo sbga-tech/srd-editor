@@ -214,10 +214,10 @@ pub struct RuhunaAtlasPage {
     data: Range<usize>,
 }
 
-/// Exact D3D9 sampler values carried by the `stevia::Texture` records inside
-/// the font AVTS metadata and by the matching Ceylon texture defaults.
+/// Exact sampler values carried by the `stevia::Texture` records inside the
+/// font AVTS metadata and by the matching Ceylon texture defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuhunaD3d9SamplerState {
+pub struct RuhunaSamplerState {
     pub base: TextureSamplerState,
     pub mip_filter: TextureFilter,
     pub max_mip_level: u32,
@@ -371,10 +371,10 @@ impl RuhunaFont {
     /// ordering is immaterial here because this method requires every object
     /// to carry the same seven fixed sampler fields before returning one
     /// shared state. A differing archive is rejected instead of guessed.
-    pub fn atlas_d3d9_sampler_state(
+    pub fn atlas_sampler_state(
         &self,
         texture: &RuhunaTextureResource,
-    ) -> Result<RuhunaD3d9SamplerState, RuhunaError> {
+    ) -> Result<RuhunaSamplerState, RuhunaError> {
         let avts = self.texture_avts(texture).map_err(RuhunaError::Avts)?;
         let metadata_entry = avts
             .entries
@@ -473,7 +473,7 @@ impl RuhunaFont {
             ));
         }
 
-        Ok(RuhunaD3d9SamplerState {
+        Ok(RuhunaSamplerState {
             base: TextureSamplerState {
                 address_u: TextureAddressMode::Clamp,
                 address_v: TextureAddressMode::Clamp,

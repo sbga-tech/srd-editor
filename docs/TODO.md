@@ -12,6 +12,12 @@ Advertise/Common 的空 property 2 已闭环为 null lookup：Scene 管理器构
 
 仍未闭合的是游戏模式切换之后 MainScene/BgScene Enable、manager current-target、Camera/ProjectionView 后续写入、其他专用 target 的注册/移除和当帧组合时序。当前 profile 只描述已证明的构造完成状态，不外推到所有运行阶段。`PlayLinkedVerseGateObject` 的资源 id 84、空 TargetScene、identity FirstCalc、DrawMask 与 `2DLayer=70` 已闭环；其 3D TextCast CPU/packet 路径也有真实 ANMS fixture。但 MainScene 构造相机会把该文字投到 1920x1080 画面下方，并会把 Common background 的中央内容放大裁切；用户提供的实机画面对照明确否定了把构造相机当作运行时默认值。最终像素基线必须等待 Camera 后续写入链闭环。
 
+## 原生 shader parity 边界
+
+当前 WebGPU surface contract 已执行 render preset `0..21` 与 `33..61`。动态路径直接复现 `EXSSF_PS_BLEND` 的 Photoshop blend、加法、两种 Gaussian、super-Gaussian、RG refraction 和 white-fill 公式；`33..60` 在每个 draw 前复制有序 composition color attachment，`61` 使用预设 3 的固定 blend。完整游戏语料中的 CATR override `34..58`、`60` 均可编译；shader ExtParam fixture 编译出的 54 组真实 material/texture 状态在替换未闭环的宿主 transform、排成确定性 gallery 后已提交，独立硬件像素 oracle 另验证精确公式。
+
+仍未闭环的是 preset `22..32` 的 shader/provider 语义，以及其他 scene/pass context 如何形成每帧完整 18 字节 Simple 键。只有这些状态继续在 CAST draw 编译点返回带 `SCN/LAYR/NODE` 来源的错误；设备初始化失败仍显示 `GPU preview unavailable` 与原始错误。未知 provider 不得降级成某个已实现 target-color mode，preview 也不会在剩余宿主边界闭环前标记为 reference-accurate。证据见 [`evidence/render-blend-state.md`](evidence/render-blend-state.md)、[`evidence/render-shader-source.md`](evidence/render-shader-source.md) 与 [`evidence/runtime-shader-state-audit.md`](evidence/runtime-shader-state-audit.md)。
+
 ## 编辑器交互与性能（按用户要求后置）
 
 当前先完成 SRD 核心解析/渲染行为，以下编辑器问题暂不打断主线：
