@@ -464,16 +464,34 @@ impl EditorDocument {
                     .zip(&edited_layer.nodes)
                     .enumerate()
                 {
-                    if source_node.name != edited_node.name {
+                    let name_changed = source_node.name != edited_node.name;
+                    let flags_changed = source_node.type_flags != edited_node.type_flags;
+                    if !name_changed && !flags_changed {
+                        continue;
+                    }
+                    let (node_block, record) =
+                        self.source_node_record(scene_index, layer_index, node_index)?;
+                    if name_changed {
                         let edited_name = edited_node.name.as_deref().ok_or_else(|| {
                             "SRD writeback cannot add or remove a NODE name".to_owned()
                         })?;
-                        let (node_block, record) =
-                            self.source_node_record(scene_index, layer_index, node_index)?;
                         let property = record_property(&record, 0x03).ok_or_else(|| {
                             format!("source NODE {node_index} is missing name property 0x03")
                         })?;
                         string_patches.push(StringPatch::new(node_block, property, edited_name)?);
+                    }
+                    if flags_changed {
+                        let (Some(_), Some(edited_flags)) =
+                            (source_node.type_flags, edited_node.type_flags)
+                        else {
+                            return Err(
+                                "SRD writeback cannot add or remove NODE property 0x30".into()
+                            );
+                        };
+                        let property = record_property(&record, 0x30).ok_or_else(|| {
+                            format!("source NODE {node_index} is missing flags property 0x30")
+                        })?;
+                        patch_u32_vector(&mut bytes, property, &[edited_flags])?;
                     }
                 }
                 for (node_index, (source, edited)) in source_layer
@@ -1174,7 +1192,21 @@ fn ensure_only_supported_values_changed(
 
             for (source_node, edited_node) in source_layer.nodes.iter().zip(&mut edited_layer.nodes)
             {
+                match (source_node.type_flags, edited_node.type_flags) {
+                    (Some(source), Some(edited)) if (source ^ edited) & !0x100 == 0 => {}
+                    (Some(_), Some(_)) => {
+                        return Err(
+                            "SRD writeback can only change NODE property 0x30 active bit 0x100"
+                                .into(),
+                        );
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err("SRD writeback cannot add or remove NODE property 0x30".into());
+                    }
+                }
                 edited_node.name.clone_from(&source_node.name);
+                edited_node.type_flags = source_node.type_flags;
             }
             for (source_transform, edited_transform) in source_layer
                 .transforms
@@ -1277,7 +1309,7 @@ fn ensure_only_supported_values_changed(
     }
     if !projects_equal_for_persistence(&normalized, source) {
         return Err(
-            "SRD writeback cannot serialize a change outside animations, Inspector names, existing TRS fields, existing CIMG/CSLI/CNUM/CRFD payload fields, and existing TEXT fields"
+            "SRD writeback cannot serialize a change outside animations, Inspector names and active states, existing TRS fields, existing CIMG/CSLI/CNUM/CRFD payload fields, and existing TEXT fields"
                 .into(),
         );
     }
@@ -2299,6 +2331,28 @@ pub(crate) mod tests {
         document.save().unwrap();
         let reloaded = EditorDocument::load(&path).unwrap();
         assert_eq!(reloaded.project, document.project);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn node_active_bit_persists_while_other_node_flags_remain_protected() {
+        let path = temporary_srd_path("node-active");
+        fs::write(&path, minimal_text_srd(b"active")).unwrap();
+        let mut document = EditorDocument::load(&path).unwrap();
+        document.project.scenes[0].layers[0].nodes[0].type_flags = Some(0x101);
+        document.save().unwrap();
+
+        let mut reloaded = EditorDocument::load(&path).unwrap();
+        assert!(reloaded.project.scenes[0].layers[0].nodes[0].active());
+        let saved = fs::read(&path).unwrap();
+        reloaded.project.scenes[0].layers[0].nodes[0].type_flags = Some(0x301);
+        assert!(
+            reloaded
+                .save()
+                .unwrap_err()
+                .contains("can only change NODE property 0x30 active bit 0x100")
+        );
+        assert_eq!(fs::read(&path).unwrap(), saved);
         fs::remove_file(path).unwrap();
     }
 

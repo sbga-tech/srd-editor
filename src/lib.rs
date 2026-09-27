@@ -18,6 +18,7 @@ pub mod renderer;
 pub mod rfz;
 pub mod ruhuna;
 pub mod scene;
+pub mod serialized_flags;
 pub mod srplayer_runtime;
 pub mod surf_file_table;
 pub mod target_pass;

@@ -194,7 +194,7 @@ fn build_fennel_draws(
             .transpose()?;
         let layer_enabled = runtime_layer
             .map(|runtime_layer| runtime_layer.enabled)
-            .unwrap_or(layer.flags & 0x100 != 0);
+            .unwrap_or_else(|| layer.active());
         if !layer_enabled {
             continue;
         }

@@ -32,6 +32,14 @@
 
 `0x32` 的完整限定条件、越界/active 分支和二维中心偏移公式已闭环，详见 [`csli-layout.md`](csli-layout.md)。它不是层级 parent 字段；`0x3C/0x3D` 的层级语义由下述最终构建函数闭环证明。
 
+### NODE 初始 CAST Active 状态
+
+`srd_init_runtime_cast_from_node` (`0xAD3F10`) 在 `0xAD3F7D..0xAD3F93` 读取解析后 NODE `+0x48`，把序列化 bit `0x100` 精确映射到运行时 `SrCast+0x4C` bit 2。这个位不是 CAST type 的一部分；type 分派只读取 NODE `+0x48` 的低字节。
+
+公共绘制包装器 `0xAD45E0` 先在 `0xAD4609` 检查派生可见性 `SrCast+0xC4`，再在 `0xAD4616..0xAD461E` 检查 `SrCast+0x4C` bit 2；任一条件不成立都不调用实际 CAST 绘制函数。因此 NODE `0x100` 是序列化的初始逐 CAST **Active** 状态，运行时实现为 draw gate；它独立于 TRS `0x3B` 可见性和 LAYR/ANMS/SANM layer gate。
+
+runtime layer 按扁平 CAST vector 逐项调用公共绘制包装器，所以父 CAST 的 bit 2 清零不会自动关闭普通子 CAST。只有已有的父可见性条件或 RefCast owning gate 会沿各自路径传播。
+
 `srd_parse_trs2` (`0xAA0970`) 与初始化器 `0xA9F120`：
 
 | 属性 | 原始偏移 | 已证明行为 |

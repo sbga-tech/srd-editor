@@ -273,7 +273,7 @@ fn advertise_mask_nodes_select_native_secondary_red_alpha_mode() {
 fn test_node(first_child_index: i16, next_sibling_index: i16) -> NodeRecord {
     NodeRecord {
         name: None,
-        type_flags: Some(1),
+        type_flags: Some(0x101),
         parent_csli_cell_index: None,
         first_child_index,
         next_sibling_index,

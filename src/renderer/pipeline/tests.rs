@@ -46,7 +46,7 @@ mod tests {
     fn node() -> NodeRecord {
         NodeRecord {
             name: None,
-            type_flags: Some(1),
+            type_flags: Some(0x101),
             parent_csli_cell_index: None,
             first_child_index: -1,
             next_sibling_index: -1,
@@ -199,7 +199,7 @@ mod tests {
             animations: Vec::new(),
             field_23: Vec::new(),
             nodes: vec![NodeRecord {
-                type_flags: Some(3),
+                type_flags: Some(0x103),
                 ..node()
             }],
             transforms: vec![RawTransform::Trs2(SpatialTransform {
@@ -398,12 +398,12 @@ mod tests {
             nodes: vec![
                 node(),
                 NodeRecord {
-                    type_flags: Some(3),
+                    type_flags: Some(0x103),
                     ..node()
                 },
                 node(),
                 NodeRecord {
-                    type_flags: Some(3),
+                    type_flags: Some(0x103),
                     ..node()
                 },
             ],
@@ -767,7 +767,7 @@ mod tests {
             animations: Vec::new(),
             field_23: Vec::new(),
             nodes: vec![NodeRecord {
-                type_flags: Some(2),
+                type_flags: Some(0x102),
                 ..node()
             }],
             transforms: vec![RawTransform::Trs2(SpatialTransform::default())],

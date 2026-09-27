@@ -308,7 +308,7 @@ impl ProjectLayerRuntimeState {
         let image_states = runtime_image_states(layer, &image_bases);
         Self {
             target,
-            enabled: layer.flags & 0x100 != 0,
+            enabled: layer.active(),
             cast_transforms: layer
                 .transforms
                 .iter()

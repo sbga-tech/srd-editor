@@ -15,7 +15,7 @@ use crate::renderer::{PreviewCastSelection, PreviewHighlightKind, PreviewHighlig
 use crate::scene::{AnimationSetDefinition, Layer, Project, Scene, SceneAnimationSlot};
 
 use super::channels::{self, ChannelValue, KeySemantics, KeyValue};
-use super::model::{EditorModel, ModelChange};
+use super::model::{EditorModel, ModelChange, set_masked_flag};
 
 /// Which workspace owns the window. Both live in the same OS window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +205,6 @@ pub struct AnimateDrafts {
     pub set_duration: String,
     pub animation_name: String,
     pub animation_duration: String,
-    pub animation_flags: String,
     pub key_frame: String,
     pub key_value: String,
     pub key_rgba: [String; 4],
@@ -482,7 +481,7 @@ pub enum AnimateAction {
     DeleteAnimation,
     SetAnimationName(String),
     SetAnimationDuration(String),
-    SetAnimationFlags(String),
+    SetAnimationLoop(bool),
     // Legacy raw MOT/TRK/KEY editing remains while existing UI consumers
     // migrate to property-based authoring below.
     AddMotion(usize),
@@ -554,7 +553,7 @@ impl AnimateAction {
             | Self::DeleteAnimation
             | Self::SetAnimationName(_)
             | Self::SetAnimationDuration(_)
-            | Self::SetAnimationFlags(_)
+            | Self::SetAnimationLoop(_)
             | Self::AddMotion(_)
             | Self::DeleteMotion(_)
             | Self::SetMotionTarget(..)
@@ -621,8 +620,8 @@ fn empty_assignment(layer_count: usize) -> AnimationSetDefinition {
     }
 }
 
-/// Dense scratch assignment: one slot per layer, enabled from each layer's
-/// serialized `flags & 0x100`, with no animation names assigned yet.
+/// Dense scratch assignment: one slot per layer, active from the authored
+/// layer state, with no animation names assigned yet.
 fn scratch_assignment(scene: &Scene, duration: i32) -> AnimationSetDefinition {
     AnimationSetDefinition {
         name: Vec::new(),
@@ -634,7 +633,7 @@ fn scratch_assignment(scene: &Scene, duration: i32) -> AnimationSetDefinition {
             .iter()
             .map(|layer| SceneAnimationSlot {
                 animation_name: Vec::new(),
-                enabled: i32::from(layer.flags & 0x100 != 0),
+                enabled: i32::from(layer.active()),
             })
             .collect(),
     }
@@ -1347,11 +1346,9 @@ impl EditorModel {
         if let Some(animation) = animation {
             self.animate.drafts.animation_name = display_srd_name(&animation.name);
             self.animate.drafts.animation_duration = animation.duration.to_string();
-            self.animate.drafts.animation_flags = format!("{:#x}", animation.flags);
         } else {
             self.animate.drafts.animation_name.clear();
             self.animate.drafts.animation_duration.clear();
-            self.animate.drafts.animation_flags.clear();
         }
         self.animate_sync_key_drafts();
     }
@@ -1482,7 +1479,7 @@ impl EditorModel {
             AnimateAction::SetAnimationDuration(value) => {
                 self.animate_set_animation_duration(value)
             }
-            AnimateAction::SetAnimationFlags(value) => self.animate_set_animation_flags(value),
+            AnimateAction::SetAnimationLoop(enabled) => self.animate_set_animation_loop(enabled),
             AnimateAction::AddMotion(node) => self.animate_add_motion(node),
             AnimateAction::DeleteMotion(motion) => self.animate_delete_motion(motion),
             AnimateAction::SetMotionTarget(motion, node) => {
@@ -2258,18 +2255,15 @@ impl EditorModel {
         self.animate_write_animation(move |animation| animation.duration = duration)
     }
 
-    fn animate_set_animation_flags(&mut self, value: String) -> ModelChange {
-        self.animate.drafts.animation_flags = value.clone();
-        let trimmed = value.trim();
-        let parsed = trimmed
-            .strip_prefix("0x")
-            .or_else(|| trimmed.strip_prefix("0X"))
-            .map(|hex| u32::from_str_radix(hex, 16))
-            .unwrap_or_else(|| trimmed.parse::<u32>());
-        let Ok(flags) = parsed else {
+    fn animate_set_animation_loop(&mut self, enabled: bool) -> ModelChange {
+        let layer = self.animate.selected_layer;
+        if self.layer_locked(layer) {
+            self.set_action_notice("Unlock the selected layer before editing its animation flags.");
             return ModelChange::default();
-        };
-        self.animate_write_animation(move |animation| animation.flags = flags)
+        }
+        self.animate_write_animation(move |animation| {
+            set_masked_flag(&mut animation.flags, 0x01, enabled);
+        })
     }
 
     fn animate_write_animation(
@@ -3411,6 +3405,7 @@ mod tests {
     use crate::animation::{Key8, Key20, KeyData, Track};
     use crate::document::EditorDocument;
     use crate::editor::model::{EditorAction, TransformField};
+    use crate::serialized_flags::ANIMATION_FLAGS;
     use std::path::PathBuf;
 
     fn temporary_srd_path(label: &str) -> PathBuf {
@@ -3543,6 +3538,47 @@ mod tests {
                 .slots
                 .iter()
                 .all(SceneAnimationSlot::is_enabled)
+        );
+        cleanup(path);
+    }
+
+    #[test]
+    fn animation_loop_toggle_preserves_unlisted_bits() {
+        let (mut model, path) = authored_model("animation-loop-mask");
+        model.document_mut().unwrap().project.scenes[0].layers[0].animations[0].flags = 0x8000_0000;
+        model.bump_revision();
+        model.animate_sync();
+        act(&mut model, AnimateAction::LoadStoredSet(Some(0)));
+        act(&mut model, AnimateAction::SelectAnimation(0, 0));
+        model.update(EditorAction::ToggleDocumentEditing);
+
+        act(&mut model, AnimateAction::SetAnimationLoop(true));
+        let enabled = model.animate_active_animation().unwrap().1.flags;
+        assert_eq!(enabled, 0x8000_0001);
+        assert_eq!(ANIMATION_FLAGS.unknown_set_bits(enabled), 0x8000_0000);
+
+        act(&mut model, AnimateAction::SetAnimationLoop(false));
+        assert_eq!(
+            model.animate_active_animation().unwrap().1.flags,
+            0x8000_0000
+        );
+        cleanup(path);
+    }
+
+    #[test]
+    fn animation_loop_toggle_respects_the_selected_layer_lock() {
+        let (mut model, path) = authored_model("animation-loop-lock");
+        act(&mut model, AnimateAction::LoadStoredSet(Some(0)));
+        act(&mut model, AnimateAction::SelectAnimation(0, 0));
+        model.update(EditorAction::ToggleDocumentEditing);
+        model.update(EditorAction::ToggleLayerLocked(0));
+
+        act(&mut model, AnimateAction::SetAnimationLoop(true));
+
+        assert_eq!(model.animate_active_animation().unwrap().1.flags, 0);
+        assert_eq!(
+            model.take_action_notice().as_deref(),
+            Some("Unlock the selected layer before editing its animation flags.")
         );
         cleanup(path);
     }

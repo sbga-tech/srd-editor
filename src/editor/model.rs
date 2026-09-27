@@ -54,16 +54,13 @@ pub struct CastStructureSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectorField {
     LayerName,
-    LayerFlags,
     CastName,
     MultiplyColor(usize),
     AdditiveColor(usize),
-    Visibility,
     PayloadWidth,
     PayloadHeight,
     OriginX,
     OriginY,
-    PayloadFlags,
     OriginMode,
     VertexColor(usize, usize),
     CrefIndex,
@@ -71,21 +68,247 @@ pub enum InspectorField {
     CoordinateOffset(usize, usize),
     NumberInteger,
     NumberFraction,
-    NumberFormat,
     ReferenceSource,
     ReferenceLayer,
     ReferenceAnimation,
-    ReferenceEnabled,
     ReferenceFrame,
-    TextFlags,
     TextFont,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorToggle {
+    LayerActive,
+    CastActive,
+    CastVisible,
+    PayloadFlipU,
+    PayloadFlipV,
+    PayloadPointSampling,
+    TextLayoutBypass,
+    NumberForcePlus,
+    NumberGrouping,
+    NumberPadInteger,
+    NumberFractionalDigits,
+    NumberPadFraction,
+    NumberDigitSpacingAfterDecimal,
+    ReferenceAnimationEnabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadRenderSelector {
+    Preset3,
+    Preset4,
+    Preset5,
+    Preset9,
+}
+
+impl PayloadRenderSelector {
+    pub const ALL: [Self; 4] = [Self::Preset3, Self::Preset4, Self::Preset5, Self::Preset9];
+
+    const fn bits(self) -> u32 {
+        match self {
+            Self::Preset3 => 0,
+            Self::Preset4 => 1,
+            Self::Preset5 => 2,
+            Self::Preset9 => 3,
+        }
+    }
+
+    pub const fn from_flags(flags: u32) -> Option<Self> {
+        match flags & 0x0F {
+            0 => Some(Self::Preset3),
+            1 => Some(Self::Preset4),
+            2 => Some(Self::Preset5),
+            3 => Some(Self::Preset9),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PayloadRenderSelector {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Preset3 => "Preset 3 · standard",
+            Self::Preset4 => "Preset 4",
+            Self::Preset5 => "Preset 5",
+            Self::Preset9 => "Preset 9",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UvVertexOrder {
+    TopLeftFirst,
+    TopRightFirst,
+    BottomRightFirst,
+    BottomLeftFirst,
+}
+
+impl UvVertexOrder {
+    pub const ALL: [Self; 4] = [
+        Self::TopLeftFirst,
+        Self::TopRightFirst,
+        Self::BottomRightFirst,
+        Self::BottomLeftFirst,
+    ];
+
+    const fn bits(self) -> u32 {
+        match self {
+            Self::TopLeftFirst => 0,
+            Self::TopRightFirst => 0x40,
+            Self::BottomRightFirst => 0x80,
+            Self::BottomLeftFirst => 0xC0,
+        }
+    }
+
+    pub const fn from_flags(flags: u32) -> Self {
+        match flags & 0xC0 {
+            0x40 => Self::TopRightFirst,
+            0x80 => Self::BottomRightFirst,
+            0xC0 => Self::BottomLeftFirst,
+            _ => Self::TopLeftFirst,
+        }
+    }
+}
+
+impl std::fmt::Display for UvVertexOrder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::TopLeftFirst => "TL · BL · TR · BR",
+            Self::TopRightFirst => "TR · TL · BR · BL",
+            Self::BottomRightFirst => "BR · TR · BL · TL",
+            Self::BottomLeftFirst => "BL · BR · TL · TR",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadSpecialPreset {
+    None,
+    Preset20,
+    Preset21,
+}
+
+impl PayloadSpecialPreset {
+    pub const ALL: [Self; 3] = [Self::None, Self::Preset20, Self::Preset21];
+
+    const fn bits(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Preset20 => 0x200,
+            Self::Preset21 => 0x400,
+        }
+    }
+
+    pub const fn from_flags(flags: u32) -> Option<Self> {
+        match flags & 0x600 {
+            0 => Some(Self::None),
+            0x200 => Some(Self::Preset20),
+            0x400 => Some(Self::Preset21),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PayloadSpecialPreset {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::None => "None",
+            Self::Preset20 => "Preset 20",
+            Self::Preset21 => "Preset 21",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HorizontalAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+impl HorizontalAlignment {
+    pub const ALL: [Self; 3] = [Self::Left, Self::Center, Self::Right];
+
+    const fn bits(self) -> u32 {
+        match self {
+            Self::Left => 0,
+            Self::Center => 0x04,
+            Self::Right => 0x08,
+        }
+    }
+
+    pub const fn from_flags(flags: u32) -> Option<Self> {
+        match flags & 0x0C {
+            0 => Some(Self::Left),
+            0x04 => Some(Self::Center),
+            0x08 => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for HorizontalAlignment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Left => "Left",
+            Self::Center => "Center",
+            Self::Right => "Right",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalAlignment {
+    Top,
+    Middle,
+    Bottom,
+}
+
+impl VerticalAlignment {
+    pub const ALL: [Self; 3] = [Self::Top, Self::Middle, Self::Bottom];
+
+    const fn bits(self) -> u32 {
+        match self {
+            Self::Top => 0,
+            Self::Middle => 0x10,
+            Self::Bottom => 0x20,
+        }
+    }
+
+    pub const fn from_flags(flags: u32) -> Option<Self> {
+        match flags & 0x30 {
+            0 => Some(Self::Top),
+            0x10 => Some(Self::Middle),
+            0x20 => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for VerticalAlignment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Top => "Top",
+            Self::Middle => "Middle",
+            Self::Bottom => "Bottom",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorChoice {
+    PayloadRenderSelector(PayloadRenderSelector),
+    UvVertexOrder(UvVertexOrder),
+    PayloadSpecialPreset(PayloadSpecialPreset),
+    TextHorizontalAlignment(HorizontalAlignment),
+    TextVerticalAlignment(VerticalAlignment),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisualGeometryDraft {
     pub size: [String; 2],
     pub origin: [String; 2],
-    pub flags: String,
+    pub flags: u32,
     pub origin_mode: String,
     pub vertex_colors: [[String; 4]; 4],
 }
@@ -95,7 +318,7 @@ impl Default for VisualGeometryDraft {
         Self {
             size: std::array::from_fn(|_| "0".into()),
             origin: std::array::from_fn(|_| "0".into()),
-            flags: "0".into(),
+            flags: 0,
             origin_mode: "0".into(),
             vertex_colors: std::array::from_fn(|_| std::array::from_fn(|_| "255".into())),
         }
@@ -129,7 +352,7 @@ pub struct ImageCastDraft {
 pub struct TextCastDraft {
     pub box_geometry: VisualGeometryDraft,
     pub source_binding: ImageBindingDraft,
-    pub flags: String,
+    pub flags: Option<u32>,
     pub font: String,
 }
 
@@ -143,7 +366,8 @@ pub struct NumberCastDraft {
     pub layout: VisualGeometryDraft,
     pub integer: String,
     pub fraction: String,
-    pub format: String,
+    pub format_flags: u32,
+    pub alignment_flags: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -151,7 +375,7 @@ pub struct ReferenceCastDraft {
     pub source: String,
     pub layer: String,
     pub animation: String,
-    pub enabled: String,
+    pub enabled: bool,
     pub frame: String,
 }
 
@@ -201,13 +425,13 @@ impl CastRoleDraft {
 pub struct InspectorDraft {
     pub layer_name: String,
     pub cast_name: String,
-    pub layer_flags: String,
+    pub layer_flags: u32,
     pub position: [String; 3],
     pub rotation: [String; 3],
     pub scale: [String; 3],
     pub multiply_color: [String; 4],
     pub additive_color: [String; 4],
-    pub visibility: String,
+    pub visibility: bool,
     pub role: CastRoleDraft,
 }
 
@@ -216,13 +440,13 @@ impl Default for InspectorDraft {
         Self {
             layer_name: String::new(),
             cast_name: String::new(),
-            layer_flags: "0".into(),
+            layer_flags: 0,
             position: std::array::from_fn(|_| "0".into()),
             rotation: std::array::from_fn(|_| "0".into()),
             scale: std::array::from_fn(|_| "1".into()),
             multiply_color: std::array::from_fn(|_| "255".into()),
             additive_color: std::array::from_fn(|_| "0".into()),
-            visibility: "1".into(),
+            visibility: true,
             role: CastRoleDraft::None,
         }
     }
@@ -232,7 +456,6 @@ impl Default for InspectorDraft {
 enum InspectorValue {
     Bytes(Vec<u8>),
     U8(u8),
-    U32(u32),
     I16(i16),
     I32(i32),
     F32(f32),
@@ -287,6 +510,8 @@ pub enum EditorAction {
     SetTransformTool(TransformTool),
     EditTransform(TransformField, String),
     EditInspectorField(InspectorField, String),
+    SetInspectorToggle(InspectorToggle, bool),
+    SetInspectorChoice(InspectorChoice),
     CommitCanvasTransform(CanvasTransformEdit),
     EditTextContent(String),
     ToggleRuntimeTextInput,
@@ -512,6 +737,8 @@ impl EditorModel {
             | EditorAction::RenameScene(_)
             | EditorAction::EditTransform(..)
             | EditorAction::EditInspectorField(..)
+            | EditorAction::SetInspectorToggle(..)
+            | EditorAction::SetInspectorChoice(..)
             | EditorAction::CommitCanvasTransform(..)
             | EditorAction::EditTextContent(..) => HistoryScope::Project,
             EditorAction::ToggleRuntimeTextInput
@@ -594,6 +821,8 @@ impl EditorModel {
                     | EditorAction::RenameScene(_)
                     | EditorAction::EditTransform(..)
                     | EditorAction::EditInspectorField(..)
+                    | EditorAction::SetInspectorToggle(..)
+                    | EditorAction::SetInspectorChoice(..)
                     | EditorAction::CommitCanvasTransform(..)
                     | EditorAction::EditTextContent(..)
                     | EditorAction::Undo
@@ -688,6 +917,16 @@ impl EditorModel {
             }
             EditorAction::EditInspectorField(field, value) => {
                 if self.edit_inspector_field(field, value) {
+                    return ModelChange::PREVIEW;
+                }
+            }
+            EditorAction::SetInspectorToggle(toggle, enabled) => {
+                if self.set_inspector_toggle(toggle, enabled) {
+                    return ModelChange::PREVIEW;
+                }
+            }
+            EditorAction::SetInspectorChoice(choice) => {
+                if self.set_inspector_choice(choice) {
                     return ModelChange::PREVIEW;
                 }
             }
@@ -1584,15 +1823,7 @@ impl EditorModel {
     }
 
     fn edit_inspector_field(&mut self, field: InspectorField, value: String) -> bool {
-        if self.selected_layer_locked() || self.selected_cast_locked() {
-            self.action_notice = Some(
-                "Unlock the selected layer and CAST hierarchy before editing Inspector fields."
-                    .into(),
-            );
-            return false;
-        }
-        if !self.document_editing() {
-            self.action_notice = Some("Enable Edit before changing Inspector values.".into());
+        if !self.inspector_mutation_allowed() {
             return false;
         }
 
@@ -1629,6 +1860,223 @@ impl EditorModel {
         true
     }
 
+    fn inspector_mutation_allowed(&mut self) -> bool {
+        if self.selected_layer_locked() || self.selected_cast_locked() {
+            self.action_notice = Some(
+                "Unlock the selected layer and CAST hierarchy before editing Inspector fields."
+                    .into(),
+            );
+            return false;
+        }
+        if !self.document_editing() {
+            self.action_notice = Some("Enable Edit before changing Inspector values.".into());
+            return false;
+        }
+        true
+    }
+
+    fn set_inspector_toggle(&mut self, toggle: InspectorToggle, enabled: bool) -> bool {
+        if !self.inspector_mutation_allowed() {
+            return false;
+        }
+
+        if toggle == InspectorToggle::CastVisible && self.workspace == Workspace::Animate {
+            if self.inspector.visibility == enabled {
+                return false;
+            }
+            let changed = self.animate_edit_inspector_value(10, u32::from(enabled).to_string());
+            if changed {
+                self.sync_inspector();
+            }
+            return changed;
+        }
+
+        let scene_index = self.selected_scene;
+        let layer_index = self.selected_layer;
+        let node = self.selected_node;
+        let changed = (|| -> Option<bool> {
+            let layer = self
+                .document
+                .as_mut()?
+                .project
+                .scenes
+                .get_mut(scene_index)?
+                .layers
+                .get_mut(layer_index)?;
+            if toggle == InspectorToggle::LayerActive {
+                return Some(set_masked_flag(&mut layer.flags, 0x100, enabled));
+            }
+
+            let node = node?;
+            let kind = layer.classify_cast(node)?.kind;
+            match toggle {
+                InspectorToggle::LayerActive => unreachable!(),
+                InspectorToggle::CastActive => {
+                    let flags = layer.nodes.get_mut(node)?.type_flags.as_mut()?;
+                    Some(set_masked_flag(flags, 0x100, enabled))
+                }
+                InspectorToggle::CastVisible => {
+                    let visibility = &mut payload_transform_mut(layer, node)?.visibility_word;
+                    let current = *visibility != 0;
+                    if current == enabled {
+                        Some(false)
+                    } else {
+                        *visibility = u32::from(enabled);
+                        Some(true)
+                    }
+                }
+                InspectorToggle::PayloadFlipU => Some(set_masked_flag(
+                    payload_flags_mut(layer, node, kind)?,
+                    0x10,
+                    enabled,
+                )),
+                InspectorToggle::PayloadFlipV => Some(set_masked_flag(
+                    payload_flags_mut(layer, node, kind)?,
+                    0x20,
+                    enabled,
+                )),
+                InspectorToggle::PayloadPointSampling => Some(set_masked_flag(
+                    payload_flags_mut(layer, node, kind)?,
+                    0x0100_0000,
+                    enabled,
+                )),
+                InspectorToggle::TextLayoutBypass => {
+                    (kind == SrCastKind::Text).then_some(())?;
+                    let flags = layer
+                        .image_by_node
+                        .get_mut(node)?
+                        .as_mut()?
+                        .text
+                        .as_mut()?
+                        .field_78
+                        .as_mut()?;
+                    Some(set_masked_flag(flags, 0x01, enabled))
+                }
+                InspectorToggle::NumberForcePlus
+                | InspectorToggle::NumberGrouping
+                | InspectorToggle::NumberPadInteger
+                | InspectorToggle::NumberFractionalDigits
+                | InspectorToggle::NumberPadFraction
+                | InspectorToggle::NumberDigitSpacingAfterDecimal => {
+                    (kind == SrCastKind::Number).then_some(())?;
+                    let flags = &mut layer.number_by_node.get_mut(node)?.as_mut()?.format_flags;
+                    let mask = match toggle {
+                        InspectorToggle::NumberForcePlus => 0x01,
+                        InspectorToggle::NumberGrouping => 0x02,
+                        InspectorToggle::NumberPadInteger => 0x04,
+                        InspectorToggle::NumberFractionalDigits => 0x08,
+                        InspectorToggle::NumberPadFraction => 0x10,
+                        InspectorToggle::NumberDigitSpacingAfterDecimal => 0x20,
+                        _ => unreachable!(),
+                    };
+                    Some(set_masked_flag(flags, mask, enabled))
+                }
+                InspectorToggle::ReferenceAnimationEnabled => {
+                    (kind == SrCastKind::Reference).then_some(())?;
+                    let value = &mut layer
+                        .reference_by_node
+                        .get_mut(node)?
+                        .as_mut()?
+                        .animation_enabled;
+                    let current = *value != 0;
+                    if current == enabled {
+                        Some(false)
+                    } else {
+                        *value = i32::from(enabled) as u32;
+                        Some(true)
+                    }
+                }
+            }
+        })();
+
+        let Some(changed) = changed else {
+            self.action_notice =
+                Some("This semantic control is unavailable for the selected CAST.".into());
+            return false;
+        };
+        if !changed {
+            return false;
+        }
+        self.bump_revision();
+        self.sync_inspector();
+        true
+    }
+
+    fn set_inspector_choice(&mut self, choice: InspectorChoice) -> bool {
+        if !self.inspector_mutation_allowed() {
+            return false;
+        }
+
+        let scene_index = self.selected_scene;
+        let layer_index = self.selected_layer;
+        let node = self.selected_node;
+        let changed = (|| -> Option<bool> {
+            let layer = self
+                .document
+                .as_mut()?
+                .project
+                .scenes
+                .get_mut(scene_index)?
+                .layers
+                .get_mut(layer_index)?;
+            let node = node?;
+            let kind = layer.classify_cast(node)?.kind;
+            match choice {
+                InspectorChoice::PayloadRenderSelector(value) => Some(set_masked_value(
+                    payload_flags_mut(layer, node, kind)?,
+                    0x0F,
+                    value.bits(),
+                )),
+                InspectorChoice::UvVertexOrder(value) => Some(set_masked_value(
+                    payload_flags_mut(layer, node, kind)?,
+                    0xC0,
+                    value.bits(),
+                )),
+                InspectorChoice::PayloadSpecialPreset(value) => Some(set_masked_value(
+                    payload_flags_mut(layer, node, kind)?,
+                    0x600,
+                    value.bits(),
+                )),
+                InspectorChoice::TextHorizontalAlignment(value) => {
+                    (kind == SrCastKind::Text).then_some(())?;
+                    let flags = layer
+                        .image_by_node
+                        .get_mut(node)?
+                        .as_mut()?
+                        .text
+                        .as_mut()?
+                        .field_78
+                        .as_mut()?;
+                    Some(set_masked_value(flags, 0x0C, value.bits()))
+                }
+                InspectorChoice::TextVerticalAlignment(value) => {
+                    (kind == SrCastKind::Text).then_some(())?;
+                    let flags = layer
+                        .image_by_node
+                        .get_mut(node)?
+                        .as_mut()?
+                        .text
+                        .as_mut()?
+                        .field_78
+                        .as_mut()?;
+                    Some(set_masked_value(flags, 0x30, value.bits()))
+                }
+            }
+        })();
+
+        let Some(changed) = changed else {
+            self.action_notice =
+                Some("This semantic control is unavailable for the selected CAST.".into());
+            return false;
+        };
+        if !changed {
+            return false;
+        }
+        self.bump_revision();
+        self.sync_inspector();
+        true
+    }
+
     fn animated_inspector_value(
         &self,
         field: InspectorField,
@@ -1662,9 +2110,6 @@ impl EditorModel {
             }
             (InspectorField::AdditiveColor(3), InspectorValue::U8(value)) => {
                 Some((22, (f32::from(*value) / 255.0).to_string()))
-            }
-            (InspectorField::Visibility, InspectorValue::U32(value)) => {
-                Some((10, u32::from(*value != 0).to_string()))
             }
             (InspectorField::PayloadWidth, InspectorValue::F32(value)) => {
                 Some((11, value.to_string()))
@@ -1705,7 +2150,6 @@ impl EditorModel {
     fn inspector_draft_mut(&mut self, field: InspectorField) -> Option<&mut String> {
         match field {
             InspectorField::LayerName => Some(&mut self.inspector.layer_name),
-            InspectorField::LayerFlags => Some(&mut self.inspector.layer_flags),
             InspectorField::CastName => Some(&mut self.inspector.cast_name),
             InspectorField::MultiplyColor(component) => {
                 self.inspector.multiply_color.get_mut(component)
@@ -1713,12 +2157,10 @@ impl EditorModel {
             InspectorField::AdditiveColor(component) => {
                 self.inspector.additive_color.get_mut(component)
             }
-            InspectorField::Visibility => Some(&mut self.inspector.visibility),
             InspectorField::PayloadWidth => self.inspector.role.geometry_mut()?.size.get_mut(0),
             InspectorField::PayloadHeight => self.inspector.role.geometry_mut()?.size.get_mut(1),
             InspectorField::OriginX => self.inspector.role.geometry_mut()?.origin.get_mut(0),
             InspectorField::OriginY => self.inspector.role.geometry_mut()?.origin.get_mut(1),
-            InspectorField::PayloadFlags => Some(&mut self.inspector.role.geometry_mut()?.flags),
             InspectorField::OriginMode => {
                 Some(&mut self.inspector.role.geometry_mut()?.origin_mode)
             }
@@ -1750,10 +2192,6 @@ impl EditorModel {
                 CastRoleDraft::Number(value) => Some(&mut value.fraction),
                 _ => None,
             },
-            InspectorField::NumberFormat => match &mut self.inspector.role {
-                CastRoleDraft::Number(value) => Some(&mut value.format),
-                _ => None,
-            },
             InspectorField::ReferenceSource => match &mut self.inspector.role {
                 CastRoleDraft::Reference(value) => Some(&mut value.source),
                 _ => None,
@@ -1766,16 +2204,8 @@ impl EditorModel {
                 CastRoleDraft::Reference(value) => Some(&mut value.animation),
                 _ => None,
             },
-            InspectorField::ReferenceEnabled => match &mut self.inspector.role {
-                CastRoleDraft::Reference(value) => Some(&mut value.enabled),
-                _ => None,
-            },
             InspectorField::ReferenceFrame => match &mut self.inspector.role {
                 CastRoleDraft::Reference(value) => Some(&mut value.frame),
-                _ => None,
-            },
-            InspectorField::TextFlags => match &mut self.inspector.role {
-                CastRoleDraft::Text(value) => Some(&mut value.flags),
                 _ => None,
             },
             InspectorField::TextFont => match &mut self.inspector.role {
@@ -1787,10 +2217,13 @@ impl EditorModel {
 
     fn inspector_value(&self, field: InspectorField) -> Option<InspectorValue> {
         let layer = self.selected_layer()?;
+        if field == InspectorField::LayerName {
+            return Some(InspectorValue::Bytes(layer.name.clone()));
+        }
         let node = self.selected_node?;
         let kind = layer.classify_cast(node)?.kind;
         Some(match field {
-            InspectorField::LayerName => InspectorValue::Bytes(layer.name.clone()),
+            InspectorField::LayerName => unreachable!(),
             InspectorField::CastName => {
                 InspectorValue::Bytes(layer.nodes.get(node)?.name.as_ref()?.clone())
             }
@@ -1800,10 +2233,6 @@ impl EditorModel {
             InspectorField::AdditiveColor(component) => {
                 InspectorValue::U8(layer.transforms.get(node)?.spatial().additive_color[component])
             }
-            InspectorField::LayerFlags => InspectorValue::U32(layer.flags),
-            InspectorField::Visibility => {
-                InspectorValue::U32(layer.transforms.get(node)?.spatial().visibility_word)
-            }
             InspectorField::PayloadWidth => {
                 InspectorValue::F32(payload_size(layer, node, kind)?[0])
             }
@@ -1812,7 +2241,6 @@ impl EditorModel {
             }
             InspectorField::OriginX => InspectorValue::F32(payload_origin(layer, node, kind)?[0]),
             InspectorField::OriginY => InspectorValue::F32(payload_origin(layer, node, kind)?[1]),
-            InspectorField::PayloadFlags => InspectorValue::U32(payload_flags(layer, node, kind)?),
             InspectorField::OriginMode => {
                 InspectorValue::U8(payload_origin_mode(layer, node, kind)?)
             }
@@ -1841,62 +2269,30 @@ impl EditorModel {
                 (kind == SrCastKind::Number).then_some(())?;
                 InspectorValue::F32(layer.number_by_node.get(node)?.as_ref()?.initial_fraction)
             }
-            InspectorField::NumberFormat => {
-                (kind == SrCastKind::Number).then_some(())?;
-                InspectorValue::U32(layer.number_by_node.get(node)?.as_ref()?.format_flags)
-            }
             InspectorField::ReferenceSource
             | InspectorField::ReferenceLayer
             | InspectorField::ReferenceAnimation
-            | InspectorField::ReferenceEnabled
             | InspectorField::ReferenceFrame => {
                 (kind == SrCastKind::Reference).then_some(())?;
+                let reference = layer.reference_by_node.get(node)?.as_ref()?;
                 match field {
-                    InspectorField::ReferenceSource => InspectorValue::Bytes(
-                        layer
-                            .reference_by_node
-                            .get(node)?
-                            .as_ref()?
-                            .source_name
-                            .clone(),
-                    ),
-                    InspectorField::ReferenceLayer => InspectorValue::Bytes(
-                        layer
-                            .reference_by_node
-                            .get(node)?
-                            .as_ref()?
-                            .layer_name
-                            .clone(),
-                    ),
-                    InspectorField::ReferenceAnimation => InspectorValue::Bytes(
-                        layer
-                            .reference_by_node
-                            .get(node)?
-                            .as_ref()?
-                            .animation_name
-                            .clone(),
-                    ),
-                    InspectorField::ReferenceEnabled => InspectorValue::U32(
-                        layer
-                            .reference_by_node
-                            .get(node)?
-                            .as_ref()?
-                            .animation_enabled,
-                    ),
-                    InspectorField::ReferenceFrame => InspectorValue::F32(
-                        layer.reference_by_node.get(node)?.as_ref()?.default_frame,
-                    ),
+                    InspectorField::ReferenceSource => {
+                        InspectorValue::Bytes(reference.source_name.clone())
+                    }
+                    InspectorField::ReferenceLayer => {
+                        InspectorValue::Bytes(reference.layer_name.clone())
+                    }
+                    InspectorField::ReferenceAnimation => {
+                        InspectorValue::Bytes(reference.animation_name.clone())
+                    }
+                    InspectorField::ReferenceFrame => InspectorValue::F32(reference.default_frame),
                     _ => unreachable!(),
                 }
             }
-            InspectorField::TextFlags | InspectorField::TextFont => {
+            InspectorField::TextFont => {
                 (kind == SrCastKind::Text).then_some(())?;
                 let text = layer.image_by_node.get(node)?.as_ref()?.text.as_ref()?;
-                match field {
-                    InspectorField::TextFlags => InspectorValue::U32(text.field_78?),
-                    InspectorField::TextFont => InspectorValue::I32(text.font_index?),
-                    _ => unreachable!(),
-                }
+                InspectorValue::I32(text.font_index?)
             }
         })
     }
@@ -1905,14 +2301,14 @@ impl EditorModel {
         let scene = self.selected_scene;
         let layer_index = self.selected_layer;
         let node = self.selected_node;
-        let Some(layer) = self
+        let layer = self
             .document
-            .as_mut()
-            .and_then(|document| document.project.scenes.get_mut(scene))
-            .and_then(|scene| scene.layers.get_mut(layer_index))
-        else {
-            return None;
-        };
+            .as_mut()?
+            .project
+            .scenes
+            .get_mut(scene)?
+            .layers
+            .get_mut(layer_index)?;
         if field == InspectorField::LayerName {
             let InspectorValue::Bytes(value) = value else {
                 return None;
@@ -1920,26 +2316,11 @@ impl EditorModel {
             layer.name = value;
             return Some(());
         }
-        if field == InspectorField::LayerFlags {
-            let InspectorValue::U32(value) = value else {
-                return None;
-            };
-            layer.flags = value;
-            return Some(());
-        }
-        let Some(node) = node else {
-            return None;
-        };
+        let node = node?;
         let kind = layer.classify_cast(node)?.kind;
         match (field, value) {
             (InspectorField::CastName, InspectorValue::Bytes(value)) => {
-                let Some(name) = layer
-                    .nodes
-                    .get_mut(node)
-                    .and_then(|record| record.name.as_mut())
-                else {
-                    return None;
-                };
+                let name = layer.nodes.get_mut(node)?.name.as_mut()?;
                 *name = value;
             }
             (InspectorField::MultiplyColor(component), InspectorValue::U8(value)) => {
@@ -1947,9 +2328,6 @@ impl EditorModel {
             }
             (InspectorField::AdditiveColor(component), InspectorValue::U8(value)) => {
                 payload_transform_mut(layer, node)?.additive_color[component] = value;
-            }
-            (InspectorField::Visibility, InspectorValue::U32(value)) => {
-                payload_transform_mut(layer, node)?.visibility_word = u32::from(value != 0);
             }
             (InspectorField::PayloadWidth, InspectorValue::F32(value)) => {
                 *payload_size_mut(layer, node, kind, 0)? = value;
@@ -1962,9 +2340,6 @@ impl EditorModel {
             }
             (InspectorField::OriginY, InspectorValue::F32(value)) => {
                 *payload_origin_mut(layer, node, kind, 1)? = value;
-            }
-            (InspectorField::PayloadFlags, InspectorValue::U32(value)) => {
-                *payload_flags_mut(layer, node, kind)? = value;
             }
             (InspectorField::OriginMode, InspectorValue::U8(value)) => {
                 *payload_origin_mode_mut(layer, node, kind)? = value;
@@ -2004,10 +2379,6 @@ impl EditorModel {
                     .as_mut()?
                     .initial_fraction = value;
             }
-            (InspectorField::NumberFormat, InspectorValue::U32(value)) => {
-                (kind == SrCastKind::Number).then_some(())?;
-                layer.number_by_node.get_mut(node)?.as_mut()?.format_flags = value;
-            }
             (InspectorField::ReferenceSource, InspectorValue::Bytes(value)) => {
                 (kind == SrCastKind::Reference).then_some(())?;
                 layer.reference_by_node.get_mut(node)?.as_mut()?.source_name = value;
@@ -2024,14 +2395,6 @@ impl EditorModel {
                     .as_mut()?
                     .animation_name = value;
             }
-            (InspectorField::ReferenceEnabled, InspectorValue::U32(value)) => {
-                (kind == SrCastKind::Reference).then_some(())?;
-                layer
-                    .reference_by_node
-                    .get_mut(node)?
-                    .as_mut()?
-                    .animation_enabled = value;
-            }
             (InspectorField::ReferenceFrame, InspectorValue::F32(value)) => {
                 (kind == SrCastKind::Reference).then_some(())?;
                 layer
@@ -2040,35 +2403,16 @@ impl EditorModel {
                     .as_mut()?
                     .default_frame = value;
             }
-            (InspectorField::TextFlags, InspectorValue::U32(value)) => {
-                (kind == SrCastKind::Text).then_some(())?;
-                let Some(field) = layer
-                    .image_by_node
-                    .get_mut(node)?
-                    .as_mut()?
-                    .text
-                    .as_mut()?
-                    .field_78
-                    .as_mut()
-                else {
-                    return None;
-                };
-                *field = value;
-            }
             (InspectorField::TextFont, InspectorValue::I32(value)) => {
                 (kind == SrCastKind::Text).then_some(())?;
-                let Some(field) = layer
+                *layer
                     .image_by_node
                     .get_mut(node)?
                     .as_mut()?
                     .text
                     .as_mut()?
                     .font_index
-                    .as_mut()
-                else {
-                    return None;
-                };
-                *field = value;
+                    .as_mut()? = value;
             }
             _ => return None,
         }
@@ -2421,7 +2765,7 @@ impl EditorModel {
         };
         let mut draft = InspectorDraft {
             layer_name: display_srd_name(&layer.name),
-            layer_flags: format!("0x{:X}", layer.flags),
+            layer_flags: layer.flags,
             ..InspectorDraft::default()
         };
         let Some(node) = self.selected_node else {
@@ -2447,7 +2791,7 @@ impl EditorModel {
             draft.scale = spatial.scale.map(format_number);
             draft.multiply_color = spatial.multiply_color.map(|value| value.to_string());
             draft.additive_color = spatial.additive_color.map(|value| value.to_string());
-            draft.visibility = spatial.visibility_word.to_string();
+            draft.visibility = spatial.visibility_word != 0;
 
             if self.workspace == Workspace::Animate
                 && let Some(runtime_image) = runtime_image
@@ -2576,12 +2920,6 @@ fn parse_inspector_value(field: InspectorField, value: &str) -> Option<Inspector
         | InspectorField::OriginMode => parse_u32_text(value)
             .and_then(|value| u8::try_from(value).ok())
             .map(InspectorValue::U8),
-        InspectorField::Visibility
-        | InspectorField::LayerFlags
-        | InspectorField::PayloadFlags
-        | InspectorField::NumberFormat
-        | InspectorField::ReferenceEnabled
-        | InspectorField::TextFlags => parse_u32_text(value).map(InspectorValue::U32),
         InspectorField::CrefIndex | InspectorField::Cre1Index => {
             value.parse::<i16>().ok().map(InspectorValue::I16)
         }
@@ -2628,9 +2966,7 @@ fn cast_role_draft(layer: &Layer, node: usize, kind: SrCastKind) -> CastRoleDraf
             CastRoleDraft::Text(TextCastDraft {
                 box_geometry: visual_geometry_draft(layer, node, kind),
                 source_binding: image_binding_draft(layer, node),
-                flags: text
-                    .and_then(|value| value.field_78)
-                    .map_or_else(|| "0".into(), |value| format!("0x{value:X}")),
+                flags: text.and_then(|value| value.field_78),
                 font: text
                     .and_then(|value| value.font_index)
                     .map_or_else(|| "0".into(), |value| value.to_string()),
@@ -2651,8 +2987,7 @@ fn cast_role_draft(layer: &Layer, node: usize, kind: SrCastKind) -> CastRoleDraf
                 animation: reference
                     .map(|value| display_srd_name(&value.animation_name))
                     .unwrap_or_default(),
-                enabled: reference
-                    .map_or_else(|| "0".into(), |value| value.animation_enabled.to_string()),
+                enabled: reference.is_some_and(|value| value.animation_enabled != 0),
                 frame: reference
                     .map_or_else(|| "0".into(), |value| format_number(value.default_frame)),
             })
@@ -2665,8 +3000,8 @@ fn cast_role_draft(layer: &Layer, node: usize, kind: SrCastKind) -> CastRoleDraf
                     .map_or_else(|| "0".into(), |value| value.initial_integer.to_string()),
                 fraction: number
                     .map_or_else(|| "0".into(), |value| format_number(value.initial_fraction)),
-                format: number
-                    .map_or_else(|| "0".into(), |value| format!("0x{:X}", value.format_flags)),
+                format_flags: number.map_or(0, |value| value.format_flags),
+                alignment_flags: number.map_or(0, |value| value.field_78),
             })
         }
     }
@@ -2681,7 +3016,7 @@ fn visual_geometry_draft(layer: &Layer, node: usize, kind: SrCastKind) -> Visual
         draft.origin = origin.map(format_number);
     }
     if let Some(flags) = payload_flags(layer, node, kind) {
-        draft.flags = format!("0x{flags:X}");
+        draft.flags = flags;
     }
     if let Some(origin_mode) = payload_origin_mode(layer, node, kind) {
         draft.origin_mode = origin_mode.to_string();
@@ -2854,6 +3189,19 @@ fn payload_flags_mut(layer: &mut Layer, node: usize, kind: SrCastKind) -> Option
     }
 }
 
+pub(super) fn set_masked_flag(value: &mut u32, mask: u32, enabled: bool) -> bool {
+    set_masked_value(value, mask, if enabled { mask } else { 0 })
+}
+
+fn set_masked_value(value: &mut u32, mask: u32, bits: u32) -> bool {
+    let next = (*value & !mask) | (bits & mask);
+    if next == *value {
+        return false;
+    }
+    *value = next;
+    true
+}
+
 fn payload_origin_mode_mut(layer: &mut Layer, node: usize, kind: SrCastKind) -> Option<&mut u8> {
     match kind {
         SrCastKind::Image | SrCastKind::Text => {
@@ -3022,7 +3370,10 @@ fn animation_target_name(target: u16) -> String {
 mod tests {
     use super::*;
     use crate::animation::{AnimationDefinition, Key8, KeyData, Motion, Track};
+    use crate::number::NumberDefinition;
+    use crate::reference::ReferenceDefinition;
     use crate::scene::{AnimationSetDefinition, SceneAnimationSlot};
+    use crate::serialized_flags::{IMAGE_FLAGS, LAYER_FLAGS, NODE_FLAGS, TEXT_FLAGS};
 
     #[test]
     fn startup_without_a_path_is_an_editable_empty_project() {
@@ -3247,7 +3598,7 @@ mod tests {
         let scene = model.selected_scene_index();
         let layer = model.selected_layer_index();
         let expected_name = display_srd_name(&model.selected_layer().unwrap().name);
-        let expected_flags = format!("0x{:X}", model.selected_layer().unwrap().flags);
+        let expected_flags = model.selected_layer().unwrap().flags;
 
         assert!(
             model
@@ -3258,6 +3609,261 @@ mod tests {
         assert_eq!(model.inspector().layer_name, expected_name);
         assert_eq!(model.inspector().layer_flags, expected_flags);
         assert!(model.inspector().cast_name.is_empty());
+    }
+
+    #[test]
+    fn semantic_flag_controls_preserve_unlisted_bits_and_change_only_their_masks() {
+        let path = temporary_srd_path("semantic-flag-masks");
+        std::fs::write(&path, crate::document::tests::minimal_text_srd(b"Flags")).unwrap();
+        let mut model = EditorModel::new(Some(path.clone()));
+        {
+            let layer = &mut model.document.as_mut().unwrap().project.scenes[0].layers[0];
+            layer.flags = 0x8000_0001;
+            layer.nodes[0].type_flags = Some(0x8000_0001);
+            let image = layer.image_by_node[0].as_mut().unwrap();
+            image.flags = 0x8000_0700;
+            image.text.as_mut().unwrap().field_78 = Some(0x8000_003C);
+        }
+        model.sync_inspector();
+        model.update(EditorAction::ToggleDocumentEditing);
+
+        for action in [
+            EditorAction::SetInspectorToggle(InspectorToggle::LayerActive, true),
+            EditorAction::SetInspectorToggle(InspectorToggle::CastActive, true),
+            EditorAction::SetInspectorToggle(InspectorToggle::PayloadFlipU, true),
+            EditorAction::SetInspectorChoice(InspectorChoice::PayloadRenderSelector(
+                PayloadRenderSelector::Preset5,
+            )),
+            EditorAction::SetInspectorChoice(InspectorChoice::UvVertexOrder(
+                UvVertexOrder::BottomRightFirst,
+            )),
+            EditorAction::SetInspectorChoice(InspectorChoice::PayloadSpecialPreset(
+                PayloadSpecialPreset::Preset20,
+            )),
+            EditorAction::SetInspectorToggle(InspectorToggle::PayloadPointSampling, true),
+            EditorAction::SetInspectorToggle(InspectorToggle::TextLayoutBypass, true),
+            EditorAction::SetInspectorChoice(InspectorChoice::TextHorizontalAlignment(
+                HorizontalAlignment::Right,
+            )),
+            EditorAction::SetInspectorChoice(InspectorChoice::TextVerticalAlignment(
+                VerticalAlignment::Middle,
+            )),
+        ] {
+            assert!(model.update(action).preview);
+        }
+
+        let layer = &model.document().unwrap().project.scenes[0].layers[0];
+        assert_eq!(layer.flags, 0x8000_0101);
+        assert_eq!(layer.nodes[0].type_flags, Some(0x8000_0101));
+        let image = layer.image_by_node[0].as_ref().unwrap();
+        assert_eq!(image.flags, 0x8100_0392);
+        assert_eq!(image.text.as_ref().unwrap().field_78, Some(0x8000_0019));
+        assert_eq!(LAYER_FLAGS.unknown_set_bits(layer.flags), 0x8000_0000);
+        assert_eq!(
+            NODE_FLAGS.unknown_set_bits(layer.nodes[0].type_flags.unwrap()),
+            0x8000_0000,
+        );
+        assert_eq!(IMAGE_FLAGS.unknown_set_bits(image.flags), 0x8000_0000);
+        assert_eq!(TEXT_FLAGS.unknown_set_bits(0x8000_0019), 0x8000_0000);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn layer_and_cast_active_toggles_save_and_reload() {
+        let path = temporary_srd_path("active-toggles");
+        std::fs::write(&path, crate::document::tests::minimal_text_srd(b"Active")).unwrap();
+        let mut model = EditorModel::new(Some(path.clone()));
+        assert!(!model.selected_layer().unwrap().active());
+        assert!(!model.selected_node().unwrap().active());
+        model.update(EditorAction::ToggleDocumentEditing);
+
+        assert!(
+            model
+                .update(EditorAction::SetInspectorToggle(
+                    InspectorToggle::LayerActive,
+                    true,
+                ))
+                .preview,
+        );
+        assert!(
+            model
+                .update(EditorAction::SetInspectorToggle(
+                    InspectorToggle::CastActive,
+                    true,
+                ))
+                .preview,
+        );
+        model.save().unwrap();
+
+        let reloaded = EditorDocument::load(&path).unwrap();
+        let layer = &reloaded.project.scenes[0].layers[0];
+        assert!(layer.active());
+        assert!(layer.nodes[0].active());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn number_format_toggles_preserve_unlisted_bits() {
+        let path = temporary_srd_path("semantic-number-format");
+        std::fs::write(&path, crate::document::tests::minimal_text_srd(b"Number")).unwrap();
+        let mut model = EditorModel::new(Some(path.clone()));
+        {
+            let layer = &mut model.document.as_mut().unwrap().project.scenes[0].layers[0];
+            layer.nodes[0].type_flags = Some(4);
+            layer.image_by_node[0] = None;
+            layer.number_by_node[0] = Some(NumberDefinition {
+                flags: 0,
+                width: 128.0,
+                height: 32.0,
+                custom_origin: [0.0; 2],
+                origin_mode: 0,
+                vertex_colors: [[0xFF; 4]; 4],
+                cref_count: 0,
+                crefs: Vec::new(),
+                field_4c: 0,
+                cre1_count: 0,
+                cre1s: Vec::new(),
+                format_flags: 0x8000_0000,
+                field_78: 0,
+                initial_integer: 0,
+                initial_fraction: 0.0,
+                fields_83_8b: [0; 9],
+                field_8c: [0.0; 2],
+                fields_8d_94: [0; 8],
+                node_index: 0,
+            });
+        }
+        model.sync_inspector();
+        model.update(EditorAction::ToggleDocumentEditing);
+
+        for toggle in [
+            InspectorToggle::NumberForcePlus,
+            InspectorToggle::NumberGrouping,
+            InspectorToggle::NumberPadInteger,
+            InspectorToggle::NumberFractionalDigits,
+            InspectorToggle::NumberPadFraction,
+            InspectorToggle::NumberDigitSpacingAfterDecimal,
+        ] {
+            assert!(
+                model
+                    .update(EditorAction::SetInspectorToggle(toggle, true))
+                    .preview
+            );
+        }
+        assert_eq!(
+            model.document().unwrap().project.scenes[0].layers[0].number_by_node[0]
+                .as_ref()
+                .unwrap()
+                .format_flags,
+            0x8000_003F
+        );
+        assert!(
+            model
+                .update(EditorAction::SetInspectorToggle(
+                    InspectorToggle::NumberGrouping,
+                    false,
+                ))
+                .preview
+        );
+        assert_eq!(
+            model.document().unwrap().project.scenes[0].layers[0].number_by_node[0]
+                .as_ref()
+                .unwrap()
+                .format_flags,
+            0x8000_003D
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn scalar_boolean_controls_preserve_noncanonical_true_until_state_changes() {
+        let path = temporary_srd_path("semantic-scalar-booleans");
+        std::fs::write(&path, crate::document::tests::minimal_text_srd(b"Boolean")).unwrap();
+        let mut model = EditorModel::new(Some(path.clone()));
+        payload_transform_mut(
+            &mut model.document.as_mut().unwrap().project.scenes[0].layers[0],
+            0,
+        )
+        .unwrap()
+        .visibility_word = 7;
+        model.sync_inspector();
+        model.update(EditorAction::ToggleDocumentEditing);
+
+        assert!(model.inspector().visibility);
+        assert!(
+            !model
+                .update(EditorAction::SetInspectorToggle(
+                    InspectorToggle::CastVisible,
+                    true,
+                ))
+                .preview
+        );
+        assert_eq!(
+            model.document().unwrap().project.scenes[0].layers[0].transforms[0]
+                .spatial()
+                .visibility_word,
+            7
+        );
+        assert!(
+            model
+                .update(EditorAction::SetInspectorToggle(
+                    InspectorToggle::CastVisible,
+                    false,
+                ))
+                .preview
+        );
+        assert_eq!(
+            model.document().unwrap().project.scenes[0].layers[0].transforms[0]
+                .spatial()
+                .visibility_word,
+            0
+        );
+
+        {
+            let layer = &mut model.document.as_mut().unwrap().project.scenes[0].layers[0];
+            layer.nodes[0].type_flags = Some(3);
+            layer.image_by_node[0] = None;
+            layer.reference_by_node[0] = Some(ReferenceDefinition {
+                source_name: b"scene".to_vec(),
+                layer_name: b"layer".to_vec(),
+                animation_enabled: 7,
+                animation_name: b"anim".to_vec(),
+                default_frame: 0.0,
+                node_index: 0,
+            });
+        }
+        model.sync_inspector();
+        assert!(
+            !model
+                .update(EditorAction::SetInspectorToggle(
+                    InspectorToggle::ReferenceAnimationEnabled,
+                    true,
+                ))
+                .preview
+        );
+        assert_eq!(
+            model.document().unwrap().project.scenes[0].layers[0].reference_by_node[0]
+                .as_ref()
+                .unwrap()
+                .animation_enabled,
+            7
+        );
+        assert!(
+            model
+                .update(EditorAction::SetInspectorToggle(
+                    InspectorToggle::ReferenceAnimationEnabled,
+                    false,
+                ))
+                .preview
+        );
+        assert_eq!(
+            model.document().unwrap().project.scenes[0].layers[0].reference_by_node[0]
+                .as_ref()
+                .unwrap()
+                .animation_enabled,
+            0
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -3482,9 +4088,9 @@ mod tests {
         assert!(transform_change.preview, "{transform_notice:?}");
         assert!(
             model
-                .update(EditorAction::EditInspectorField(
-                    InspectorField::Visibility,
-                    "0".into(),
+                .update(EditorAction::SetInspectorToggle(
+                    InspectorToggle::CastVisible,
+                    false,
                 ))
                 .preview
         );

@@ -26,8 +26,10 @@ use super::components::{
     top_bar_style, tree_controls_style, tree_row_style,
 };
 use super::model::{
-    CanvasTransformEdit, CastRoleDraft, EditorAction, ImageBindingDraft, InspectorField,
-    InspectorSection, TransformField, TransformTool, VisualGeometryDraft,
+    CanvasTransformEdit, CastRoleDraft, EditorAction, HorizontalAlignment, ImageBindingDraft,
+    InspectorChoice, InspectorField, InspectorSection, InspectorToggle, PayloadRenderSelector,
+    PayloadSpecialPreset, TransformField, TransformTool, UvVertexOrder, VerticalAlignment,
+    VisualGeometryDraft,
 };
 use super::{
     ContextDropdown, EDITOR_PREVIEW_SIZE, Editor, ItemDialog, Message, PaneKind,
@@ -36,6 +38,10 @@ use super::{
 use crate::document::display_srd_name;
 use crate::renderer::select_srd_image_render_preset;
 use crate::scene::{CastClassification, Hierarchy, Layer, NodeRecord, SrCastKind};
+use crate::serialized_flags::{
+    IMAGE_FLAGS, LAYER_FLAGS, NODE_FLAGS, NUMBER_ALIGNMENT_FLAGS, NUMBER_FORMAT_FLAGS,
+    NUMBER_IMAGE_FLAGS, SLICE_FLAGS, SerializedFlagWord, TEXT_FLAGS, set_bit_indices,
+};
 
 pub fn view(editor: &Editor) -> Element<'_, Message> {
     let mut body = column![top_bar(editor), timeline_context_bar(editor)]
@@ -1413,7 +1419,12 @@ fn inspector_panel(editor: &Editor) -> Element<'_, Message> {
 fn layer_identity(editor: &Editor) -> Element<'_, Message> {
     let model = &editor.model;
     let read_only = model.layer_locked(model.selected_layer_index()) || !model.document_editing();
+    let active = model.selected_layer().is_some_and(|layer| layer.active());
     column![
+        element_identity_row(
+            "Active",
+            identity_toggle(active, InspectorToggle::LayerActive, read_only),
+        ),
         element_identity_row(
             "Name",
             inspector_field_input(
@@ -1437,7 +1448,14 @@ fn cast_identity(editor: &Editor) -> Element<'_, Message> {
     let read_only = model.selected_cast_locked()
         || model.layer_locked(model.selected_layer_index())
         || !model.document_editing();
+    let node = model.selected_node();
+    let active = node.is_some_and(|node| node.active());
+    let active_read_only = read_only || node.and_then(|node| node.type_flags).is_none();
     column![
+        element_identity_row(
+            "Active",
+            identity_toggle(active, InspectorToggle::CastActive, active_read_only),
+        ),
         element_identity_row(
             "Name",
             inspector_field_input(
@@ -1456,6 +1474,22 @@ fn cast_identity(editor: &Editor) -> Element<'_, Message> {
     ]
     .spacing(5)
     .into()
+}
+
+fn identity_toggle(
+    enabled: bool,
+    toggle: InspectorToggle,
+    read_only: bool,
+) -> Element<'static, Message> {
+    let control = toggle_component::switch(enabled);
+    let control = if read_only {
+        control
+    } else {
+        control.on_toggle(move |enabled| {
+            Message::Model(EditorAction::SetInspectorToggle(toggle, enabled))
+        })
+    };
+    control.into()
 }
 
 fn element_identity_row<'a>(label: &'a str, control: Element<'a, Message>) -> Element<'a, Message> {
@@ -1579,12 +1613,11 @@ fn transform_inspector(editor: &Editor) -> Element<'_, Message> {
             [19, 19, 19, 22],
             read_only,
         ),
-        animated_inspector_field_row(
+        animated_semantic_toggle_row(
             editor,
-            "Visibility",
-            "1",
-            &values.visibility,
-            InspectorField::Visibility,
+            "Visible",
+            values.visibility,
+            InspectorToggle::CastVisible,
             10,
             read_only,
         ),
@@ -1613,18 +1646,16 @@ fn transform_inspector(editor: &Editor) -> Element<'_, Message> {
 fn layer_inspector(editor: &Editor) -> Element<'_, Message> {
     let model = &editor.model;
     let layer_index = model.selected_layer_index();
-    let read_only = model.layer_locked(layer_index) || !model.document_editing();
     let (node_count, animation_count) = model
         .selected_layer()
         .map_or((0, 0), |layer| (layer.nodes.len(), layer.animations.len()));
+    let flags = model.inspector().layer_flags;
     let metadata = column![
-        inspector_field_row(
-            "Flags",
-            "0x0",
-            &model.inspector().layer_flags,
-            InspectorField::LayerFlags,
-            read_only,
+        property_row(
+            "Transform storage",
+            if flags & 0x01 != 0 { "3D" } else { "2D" },
         ),
+        unknown_bit_rows(LAYER_FLAGS, flags),
         property_row("Scene", model.selected_scene_name()),
         property_row("Layer index", layer_index.to_string()),
         property_row("CAST count", node_count.to_string()),
@@ -1659,12 +1690,157 @@ fn inspector_read_only(editor: &Editor) -> bool {
         || !editor.model.document_editing()
 }
 
+fn semantic_toggle_row<'a>(
+    label: &'a str,
+    enabled: bool,
+    toggle: InspectorToggle,
+    read_only: bool,
+) -> Element<'a, Message> {
+    let control = toggle_component::switch(enabled).label(label);
+    let control = if read_only {
+        control
+    } else {
+        control.on_toggle(move |enabled| {
+            Message::Model(EditorAction::SetInspectorToggle(toggle, enabled))
+        })
+    };
+    control.into()
+}
+
+fn semantic_choice_row<'a, T, const N: usize>(
+    label: &'a str,
+    options: [T; N],
+    selected: Option<T>,
+    choice: fn(T) -> InspectorChoice,
+    read_only: bool,
+) -> Element<'a, Message>
+where
+    T: ToString + PartialEq + Clone + Copy + 'a,
+{
+    if read_only {
+        return property_row(
+            label,
+            selected.map_or_else(
+                || "Unsupported serialized state · preserved".to_owned(),
+                |value| value.to_string(),
+            ),
+        );
+    }
+    let picker = dropdown_component::single_select(options, selected, move |value| {
+        Message::Model(EditorAction::SetInspectorChoice(choice(value)))
+    })
+    .placeholder("Unsupported · preserved")
+    .width(Fill);
+    labeled_control(label, picker)
+}
+
+pub(super) fn unknown_bit_rows(
+    definition: SerializedFlagWord,
+    value: u32,
+) -> Element<'static, Message> {
+    let mut content = column![].spacing(6);
+    for bit in set_bit_indices(definition.unknown_set_bits(value)) {
+        content = content.push(
+            row![
+                text(format!(
+                    "{} 0x{:02X} · unknown bit {bit}",
+                    definition.record, definition.property
+                ))
+                .size(BODY_SIZE)
+                .color(MUTED)
+                .width(fill_portion(2)),
+                text("Set · preserved")
+                    .size(BODY_SIZE)
+                    .color(YELLOW)
+                    .width(fill_portion(3)),
+            ]
+            .spacing(8),
+        );
+    }
+    content.into()
+}
+
+fn payload_flag_definition(kind: Option<SrCastKind>) -> Option<SerializedFlagWord> {
+    match kind? {
+        SrCastKind::Image | SrCastKind::Text => Some(IMAGE_FLAGS),
+        SrCastKind::Slice => Some(SLICE_FLAGS),
+        SrCastKind::Number => Some(NUMBER_IMAGE_FLAGS),
+        SrCastKind::Null | SrCastKind::Reference => None,
+    }
+}
+
+fn payload_flag_controls<'a>(
+    editor: &'a Editor,
+    flags: u32,
+    read_only: bool,
+) -> Element<'a, Message> {
+    let kind = editor.model.selected_cast_kind();
+    let mut content = column![
+        semantic_choice_row(
+            "Render selector",
+            PayloadRenderSelector::ALL,
+            PayloadRenderSelector::from_flags(flags),
+            InspectorChoice::PayloadRenderSelector,
+            read_only,
+        ),
+        semantic_toggle_row(
+            "Flip texture U",
+            flags & 0x10 != 0,
+            InspectorToggle::PayloadFlipU,
+            read_only,
+        ),
+        semantic_toggle_row(
+            "Flip texture V",
+            flags & 0x20 != 0,
+            InspectorToggle::PayloadFlipV,
+            read_only,
+        ),
+        semantic_choice_row(
+            "UV vertex order",
+            UvVertexOrder::ALL,
+            Some(UvVertexOrder::from_flags(flags)),
+            InspectorChoice::UvVertexOrder,
+            read_only,
+        ),
+        semantic_choice_row(
+            "Renderer-special preset",
+            PayloadSpecialPreset::ALL,
+            PayloadSpecialPreset::from_flags(flags),
+            InspectorChoice::PayloadSpecialPreset,
+            read_only,
+        ),
+        semantic_toggle_row(
+            "Point sampling",
+            flags & 0x0100_0000 != 0,
+            InspectorToggle::PayloadPointSampling,
+            read_only,
+        ),
+    ]
+    .spacing(8);
+    if matches!(kind, Some(SrCastKind::Image | SrCastKind::Text)) {
+        content = content.push(property_row(
+            "CIMG payload kind",
+            if flags & 0x100 != 0 {
+                "Text factory"
+            } else {
+                "Image"
+            },
+        ));
+    }
+    if let Some(definition) = payload_flag_definition(kind) {
+        content = content.push(unknown_bit_rows(definition, flags));
+    }
+    content.into()
+}
+
 fn visual_geometry_fields<'a>(
     editor: &'a Editor,
     geometry: &'a VisualGeometryDraft,
     read_only: bool,
 ) -> Element<'a, Message> {
+    let flag_controls = payload_flag_controls(editor, geometry.flags, read_only);
     let mut content = column![
+        flag_controls,
         animated_inspector_vector2_row(
             editor,
             "Size",
@@ -1841,23 +2017,44 @@ fn text_cast_inspector<'a>(
         "$[0]", "$[1]", "$[2]", "$[3]", "$[4]", "$[5]", "$[6]", "$[7]",
     ];
     let read_only = inspector_read_only(editor);
-    let mut content = column![
-        inspector_field_row(
-            "Text flags",
-            "0x0",
-            &value.flags,
-            InspectorField::TextFlags,
-            read_only,
-        ),
-        inspector_field_row(
-            "Font index",
-            "0",
-            &value.font,
-            InspectorField::TextFont,
-            read_only,
-        ),
-    ]
-    .spacing(9);
+    let mut content = column![].spacing(9);
+    if let Some(flags) = value.flags {
+        content = content
+            .push(semantic_toggle_row(
+                "Bypass normal layout mode",
+                flags & 0x01 != 0,
+                InspectorToggle::TextLayoutBypass,
+                read_only,
+            ))
+            .push(semantic_choice_row(
+                "Horizontal alignment",
+                HorizontalAlignment::ALL,
+                HorizontalAlignment::from_flags(flags),
+                InspectorChoice::TextHorizontalAlignment,
+                read_only,
+            ))
+            .push(semantic_choice_row(
+                "Vertical alignment",
+                VerticalAlignment::ALL,
+                VerticalAlignment::from_flags(flags),
+                InspectorChoice::TextVerticalAlignment,
+                read_only,
+            ))
+            .push(unknown_bit_rows(TEXT_FLAGS, flags));
+    } else {
+        content = content.push(
+            text("TEXT layout metadata is absent; no layout flags will be synthesized.")
+                .size(CAPTION_SIZE)
+                .color(YELLOW),
+        );
+    }
+    content = content.push(inspector_field_row(
+        "Font index",
+        "0",
+        &value.font,
+        InspectorField::TextFont,
+        read_only,
+    ));
     if let Some(text_bytes) = editor.model.selected_text_content() {
         match std::str::from_utf8(text_bytes) {
             Ok(value) => {
@@ -2072,11 +2269,10 @@ fn reference_cast_inspector<'a>(
             InspectorField::ReferenceAnimation,
             read_only,
         ),
-        inspector_field_row(
-            "Enabled",
-            "1",
-            &value.enabled,
-            InspectorField::ReferenceEnabled,
+        semantic_toggle_row(
+            "Propagate child animation",
+            value.enabled,
+            InspectorToggle::ReferenceAnimationEnabled,
             read_only,
         ),
         animated_inspector_field_row(
@@ -2157,14 +2353,50 @@ fn number_cast_inspector<'a>(
             .color(MUTED),
     ]
     .spacing(9);
+    let horizontal_alignment = HorizontalAlignment::from_flags(value.alignment_flags).map_or_else(
+        || "Unsupported serialized state · preserved".to_owned(),
+        |alignment| alignment.to_string(),
+    );
     let format = column![
-        inspector_field_row(
-            "Format flags",
-            "0x0",
-            &value.format,
-            InspectorField::NumberFormat,
+        semantic_toggle_row(
+            "Show plus for nonnegative values",
+            value.format_flags & 0x01 != 0,
+            InspectorToggle::NumberForcePlus,
             read_only,
         ),
+        semantic_toggle_row(
+            "Use grouping separators",
+            value.format_flags & 0x02 != 0,
+            InspectorToggle::NumberGrouping,
+            read_only,
+        ),
+        semantic_toggle_row(
+            "Zero-pad integer digits",
+            value.format_flags & 0x04 != 0,
+            InspectorToggle::NumberPadInteger,
+            read_only,
+        ),
+        semantic_toggle_row(
+            "Render fractional digits",
+            value.format_flags & 0x08 != 0,
+            InspectorToggle::NumberFractionalDigits,
+            read_only,
+        ),
+        semantic_toggle_row(
+            "Zero-pad fractional digits",
+            value.format_flags & 0x10 != 0,
+            InspectorToggle::NumberPadFraction,
+            read_only,
+        ),
+        semantic_toggle_row(
+            "Apply digit spacing after decimal",
+            value.format_flags & 0x20 != 0,
+            InspectorToggle::NumberDigitSpacingAfterDecimal,
+            read_only,
+        ),
+        property_row("Horizontal alignment", horizontal_alignment),
+        unknown_bit_rows(NUMBER_FORMAT_FLAGS, value.format_flags),
+        unknown_bit_rows(NUMBER_ALIGNMENT_FLAGS, value.alignment_flags),
         property_row(
             "Special glyph slots",
             number.map_or(0, |value| value.fields_8d_94.len()),
@@ -2264,22 +2496,55 @@ fn advanced_inspector(editor: &Editor) -> Option<Element<'_, Message>> {
     let serialized_type = classification
         .serialized_type
         .map_or_else(|| "missing".into(), |value| value.to_string());
-    let full_flags = node
-        .type_flags
-        .map_or_else(|| "missing".into(), |value| format!("0x{value:08X}"));
-    let mut body = column![
-        property_row("NODE type", serialized_type),
-        property_row("NODE type flags", full_flags),
-    ]
-    .spacing(9);
-    if let Some(geometry) = model.inspector().role.geometry() {
-        body = body.push(inspector_field_row(
-            "Record flags",
-            "0x0",
-            &geometry.flags,
-            InspectorField::PayloadFlags,
-            read_only,
-        ));
+    let mut body = column![property_row("NODE type", serialized_type)].spacing(9);
+    if let Some(flags) = node.type_flags {
+        let matrix_basis = match flags & 0x0007_0000 {
+            0 => "Default local basis",
+            0x0001_0000 => "Mode 1 · observed special basis",
+            0x0002_0000 => "Mode 2 · unresolved",
+            0x0003_0000 => "Mode 3 · unresolved",
+            0x0004_0000 => "Mode 4 · unresolved",
+            0x0005_0000 => "Mode 5 · unresolved",
+            0x0006_0000 => "Mode 6 · unresolved",
+            _ => "Mode 7 · unresolved",
+        };
+        body = body
+            .push(property_row(
+                "Multiply colour",
+                if flags & 0x200 != 0 {
+                    "Inherited from parent"
+                } else {
+                    "Local"
+                },
+            ))
+            .push(property_row(
+                "Parent visibility",
+                if flags & 0x400 != 0 {
+                    "Required"
+                } else {
+                    "Not required"
+                },
+            ))
+            .push(property_row(
+                "Additive colour",
+                if flags & 0x0008_0000 != 0 {
+                    "Inherited from parent"
+                } else {
+                    "Local"
+                },
+            ))
+            .push(property_row("Matrix basis", matrix_basis))
+            .push(property_row(
+                "Special matrix modifier",
+                if flags & 0x0100_0000 != 0 {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                },
+            ))
+            .push(unknown_bit_rows(NODE_FLAGS, flags));
+    } else {
+        body = body.push(property_row("NODE semantics", "Missing from source"));
     }
     if let CastRoleDraft::Text(value) = &model.inspector().role {
         body = body
@@ -2803,6 +3068,25 @@ fn animated_color_group<'a>(
         );
     }
     content.into()
+}
+
+fn animated_semantic_toggle_row<'a>(
+    editor: &'a Editor,
+    label: &'a str,
+    enabled: bool,
+    toggle: InspectorToggle,
+    target: u16,
+    read_only: bool,
+) -> Element<'a, Message> {
+    row![
+        semantic_toggle_row(label, enabled, toggle, read_only),
+        Space::new().width(Fill),
+        super::animate_ui::inspector_property_controls(editor, target),
+    ]
+    .spacing(5)
+    .height(ROW_HEIGHT)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn animated_inspector_field_row<'a>(

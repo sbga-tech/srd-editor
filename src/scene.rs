@@ -37,6 +37,11 @@ impl NodeRecord {
         self.type_flags.map(|value| value as u8)
     }
 
+    /// Returns the authored CAST active state (`NODE 0x30` bit `0x100`).
+    pub fn active(&self) -> bool {
+        self.type_flags.is_some_and(|value| value & 0x100 != 0)
+    }
+
     /// Low byte loaded from parsed NODE `+0x58` by `srd_render_cast`.
     /// Missing property `0xA0` stays zero in the binary's parsed record.
     pub fn render_layer_offset(&self) -> u8 {
@@ -674,6 +679,11 @@ impl Layer {
             cast_attribute_lists,
             cast_attribute_list_by_node,
         })
+    }
+
+    /// Returns the authored layer active state (`LAYR 0x20` bit `0x100`).
+    pub fn active(&self) -> bool {
+        self.flags & 0x100 != 0
     }
 
     pub fn is_2d(&self) -> bool {

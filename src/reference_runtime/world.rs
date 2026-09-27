@@ -232,7 +232,7 @@ fn compose_runtime_cast_world_state_node(
             local.additive_color
         },
         visible,
-        render_gate: visible && layer_world.render_gate,
+        render_gate: visible && layer_world.render_gate && layer.nodes[index].active(),
     };
     output[index] = world;
     for &child in &children[index] {

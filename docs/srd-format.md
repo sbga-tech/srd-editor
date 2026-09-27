@@ -116,6 +116,58 @@ LAYR flags 位 0、NODE/TRS2/TRS3 记录、公共运行时变换、游戏三角�
 
 NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现。NODE `0x32` 在父节点 `surfride::SrSliceCast` 时索引父级 CSLI 生成单元；尺寸、origin mode、自定义 origin、显式单元累计、越界、active、2D/3D 分支和中心偏移均已闭环并实现。
 
+## 序列化 flag 清单与未知位保留规则
+
+以下清单覆盖本仓库目前会解释的 **SRD/VTBF 内容字段**。`known mask` 表示已有解析器或运行时行为依据的位；`unknown mask = !known mask`（按 32 位计算）表示尚无可安全命名的位。未知位不是保留位、也不是可清零位：编辑器必须原样保存。一个位落在 `known mask` 内也不代表它适合自由编辑；结构选择、未闭环的枚举组合仍以只读语义显示。
+
+| 记录 / 属性 | 字段类型 | known mask | unknown mask | 已闭环范围 |
+|---|---|---:|---:|---|
+| `LAYR 0x20` | u32 bit word | `0x00000101` | `0xFFFFFEFE` | 2D/3D 存储、初始 layer Active 状态 |
+| `NODE 0x30` | u32 packed word | `0x010F07FF` | `0xFEF0F800` | CAST type、初始 CAST Active 状态、父级颜色/可见性、matrix selector/modifier |
+| `ANIM 0x5F` | u32 bit word | `0x00000001` | `0xFFFFFFFE` | loop |
+| `TRK 0x54` | u32 packed format | `0x00000373` | `0xFFFFFC8C` | KEY 布局、值 family、区间 wrap |
+| `CIMG 0x49` | u32 image-style flags | `0x010007FF` | `0xFEFFF800` | preset、flip、UV order、TEXT factory、special preset、sampling |
+| `CNUM 0x49` | u32 image-style flags | `0x010006FF` | `0xFEFFF900` | 同上，但 `0x100` 没有 CIMG TEXT-factory 语义 |
+| `CSLI 0x80` | u32 image-style flags | `0x010006FF` | `0xFEFFF900` | 同上，但 `0x100` 没有 CIMG TEXT-factory 语义 |
+| `SLIC 0x83` | u32 cell flags | `0x000003F3` | `0xFFFFFC0C` | 显式尺寸、flip、UV order、active 状态 |
+| `TEXT 0x78` | u32 layout flags | `0x0000003D` | `0xFFFFFFC2` | layout bypass、横向/纵向对齐 |
+| `CNUM 0x78` | u32 alignment flags | `0x0000000C` | `0xFFFFFFF3` | 数字串横向对齐 |
+| `CNUM 0x80` | u32 format flags | `0x0000003F` | `0xFFFFFFC0` | 正号、分组、补零、小数、间距 |
+| `TEX 0x62` | u32 sampler flags | `0x00000FF0` | `0xFFFFF00F` | U/V wrap 或 clamp |
+| `FONT 0x70` | u32 aggregate flags | `0x00000007` | `0xFFFFFFF8` | 低三位任一置位时扩大字符码容量 |
+
+该表由 `src/serialized_flags.rs` 固化；测试验证每个 `known mask` 与 `unknown mask` 对完整 u32 位域互斥且完备。新增解释必须先更新行为依据，再收窄对应 unknown mask，不能只因语料中某位恒为零就将它列为“已知”。
+
+### 已知位的精确语义
+
+- `LAYR 0x20`：`0x01` 清零使用 2D/TRS2，置位使用 3D/TRS3；`0x100` 是序列化的初始 layer **Active** 状态。选择动画集时，同位置 `SANM` gate 会覆盖运行时 layer enable，因此 authored Active 与动画集状态在编辑器中分别显示。
+- `NODE 0x30`：低字节是 CAST type，目前有效值仅 `0..4`；`0x100` 是序列化的初始 CAST **Active** 状态，清零时 CAST 仍参与变换和可见性组合，但不进入绘制；`0x200` 继承父级乘色，`0x400` 要求父级可见，`0x70000` 选择 matrix 模式，`0x80000` 继承父级加色，`0x01000000` 修饰特殊 matrix 路径。未观察的 matrix 模式保留为未闭环枚举，不给出臆测名称。
+- `ANIM 0x5F`：`0x01` 使动画循环。runtime 另外使用的 completion/active/wrap 等位由加载后的状态机派生，不属于独立序列化位。
+- `TRK 0x54`：低两位选择 KEY 布局；`0x10/0x20/0x40/0x50` 是已实现的值 family；`0x100` 或 `0x200` 任一置位都会把请求 frame 折返到 `[range_start, range_end)`。当前证据没有证明 `0x100` 与 `0x200` 各自不同的业务名。
+- `CIMG/CNUM/CSLI` image-style flags：低 nibble `0..3` 分别选择 renderer preset `3/4/5/9`；`0x10/0x20` 翻转 U/V；`0xC0` 选择四种 UV 顶点顺序；`0x200/0x400` 选择 renderer-special preset 20/21；`0x01000000` 选择 Point 而非 Linear sampling。只有 `CIMG` 的 `0x100` 与存在的 `TEXT` 子块共同创建 TextCast。
+- `SLIC 0x83`：`0x01/0x02` 选择显式宽/高，`0x10/0x20` 翻转 U/V，`0xC0` 选择 UV 顶点顺序，`0x100` 是解析器生成的 active fallback，`0x200` 使序列化 active 状态具有权威性。
+- `TEXT 0x78`：`0x01` 绕过普通 layout-mode switch；`0x0C` 为 left/center/right，`0x30` 为 top/middle/bottom。多个互斥位同时置位属于 unsupported combination，必须保留，不能自动归一化。
+- `CNUM 0x78`：`0x0C` 为 left/center/right；当前编辑器只读显示，因为写回路径尚未证明可以创建或修补该属性。
+- `CNUM 0x80`：`0x01` 显示非负正号，`0x02` 插入分组分隔符，`0x04` 补齐整数位，`0x08` 生成小数，`0x10` 补齐小数位，`0x20` 在小数点后改用普通 digit spacing。
+- `TEX 0x62`：`0x00F0` 内任一位置位即 clamp U，全部清零即 wrap U；`0x0F00` 对 V 同理。当前行为没有区分各 nibble 内的单独位。
+- `FONT 0x70`：只证明低三位的聚合条件；任一位置位把允许字符码上限从 `0x100` 扩到 `0x10000`，尚未证明三位各自独立语义。
+
+### 标量布尔与非数值 flag-like 数据
+
+以下字段采用“非零为 true”，不是可拆分位图：`TRS2/TRS3 0x3B`（CAST 初始可见性）、`SANM 0x0F`（动画集位置 gate）、`CRFD 0x82`（引用动画传播 gate）。编辑器在状态没有改变时保留非规范的非零原值；只有用户真正切换状态时才写 `0` 或 `1`。
+
+`ExtParamData` 的 `layerKind/enableKind/enableLayer/enableLevel` 虽在运行时结构中形成内部位，但文件中保存的是逗号分隔 token，不属于数值 bit word。VTBF property descriptor 的 `0x3F/0x40/0x80` 是封套元数据，也不属于 SRD scene/render flags。DDS、RFZ/Ruhuna、AVTS、YABX 以及纯 runtime state 各有独立格式边界，不计入本表。
+
+### 编辑器呈现与写回约束
+
+Inspector 与 Animation Assignment 均不再提供整字 raw flag 输入。已证明且安全的状态使用 toggle 或单选枚举；例如 `ANIM 0x5F` 只显示 loop toggle。结构性状态与尚未支持写回的语义只读显示。每个当前置位的未知位单独显示为 `记录/属性 · unknown bit N = Set · preserved`，不把整字十六进制值暴露为可编辑字段。所有 semantic edit 都只替换自己的 mask：
+
+```text
+next = (old & !owned_mask) | (selected_bits & owned_mask)
+```
+
+因此一次 toggle 或枚举选择不会清除同一字段里的未知位，也不会把 unsupported combination 在未操作时悄悄归一化。
+
 ## 投影与视口
 
 `PROJ` 直接子块 `CAM ` 的 position、target、angle units、near/far 已闭环到解析后的 `SrProject+0x58`，并继续闭环到全局 `sea::Camera` 的 RH View、Perspective、`Projection*View` 与 shader `mtxPrjView` provider。`SCN 0x40/0x41` 也已证明为 scene width/height。完整证据和 Rust 实现见 [`evidence/projection.md`](evidence/projection.md)。

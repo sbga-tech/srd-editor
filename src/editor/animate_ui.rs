@@ -27,6 +27,7 @@ use super::components::{
 use super::model::{EditorAction, EditorModel};
 use super::{Editor, Message};
 use crate::document::display_srd_name;
+use crate::serialized_flags::ANIMATION_FLAGS;
 
 const LABEL_COLUMN: f32 = 284.0;
 const MIN_LABEL_COLUMN: f32 = 220.0;
@@ -349,41 +350,45 @@ fn animation_management(editor: &Editor) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let content = column![library_selector].spacing(7);
-    if state.selected_animation().is_some() {
-        content
-            .push(
-                column![
+    let Some((_, animation)) = editor.model.animate_active_animation() else {
+        return content.into();
+    };
+    let flags = animation.flags;
+    let loop_control = toggle_component::switch(flags & 0x01 != 0).label("Loop");
+    let loop_control = if state.editing() && !editor.model.layer_locked(state.selected_layer()) {
+        loop_control.on_toggle(|enabled| animate(AnimateAction::SetAnimationLoop(enabled)))
+    } else {
+        loop_control
+    };
+    content
+        .push(
+            column![
+                console_field(
+                    "NAME",
+                    &state.drafts().animation_name,
+                    Fill,
+                    state.editing(),
+                    AnimateAction::SetAnimationName,
+                ),
+                row![
                     console_field(
-                        "NAME",
-                        &state.drafts().animation_name,
+                        "DURATION",
+                        &state.drafts().animation_duration,
                         Fill,
                         state.editing(),
-                        AnimateAction::SetAnimationName,
+                        AnimateAction::SetAnimationDuration,
                     ),
-                    row![
-                        console_field(
-                            "DURATION",
-                            &state.drafts().animation_duration,
-                            Fill,
-                            state.editing(),
-                            AnimateAction::SetAnimationDuration,
-                        ),
-                        console_field(
-                            "FLAGS",
-                            &state.drafts().animation_flags,
-                            Fill,
-                            state.editing(),
-                            AnimateAction::SetAnimationFlags,
-                        ),
-                    ]
-                    .spacing(7),
+                    container(loop_control)
+                        .height(CONTROL_HEIGHT)
+                        .width(Fill)
+                        .align_y(Alignment::Center),
                 ]
                 .spacing(7),
-            )
-            .into()
-    } else {
-        content.into()
-    }
+                super::ui::unknown_bit_rows(ANIMATION_FLAGS, flags),
+            ]
+            .spacing(7),
+        )
+        .into()
 }
 
 fn delete_confirmation_strip<'a>(name: &'a str, referencing_sets: usize) -> Element<'a, Message> {

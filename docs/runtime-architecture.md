@@ -145,6 +145,13 @@ and [`evidence/render-empty-target-matrices.md`](evidence/render-empty-target-ma
 | `SrAnimation` | `0x8C` | `0xAD4D40` | name `+0x04`; raw frame bits `+0x1C`; duration `+0x20`; factors `+0x24/+0x28/+0x2C`; flags `+0x30`; parsed ANIM `+0x34`; layer owner `+0x38`; vectors `+0x3C/+0x48`; strings `+0x54/+0x6C`; tail fields `+0x84/+0x88` |
 | `SrAnimationSet` | `0x30` | `0xAD7030` | parsed ANMS `+0x04`; name `+0x08`; scene owner `+0x20`; per-layer entry vector `+0x24`; each entry allocation `0x28` |
 
+Every runtime `SrCast` stores common flags at `+0x4C`. Bit 1 records the
+effective 2D mode. `srd_init_runtime_cast_from_node` maps serialized
+`NODE 0x30` bit `0x100` to bit 2. This is the authored initial CAST
+**Active** state, implemented at runtime as a per-CAST draw gate. The common
+render wrapper checks it separately from derived transform visibility at
+`SrCast+0xC4` and from the owning layer gate.
+
 `SrScene+0x75` is the scene visibility state that the normal update writes to a
 project layer. A copied reference layer instead takes the owning RefCast gate;
 those are intentionally distinct conditions. Scene-animation selection and

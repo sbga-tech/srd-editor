@@ -31,7 +31,7 @@ mod tests {
             nodes: vec![
                 NodeRecord {
                     name: None,
-                    type_flags: Some(3),
+                    type_flags: Some(0x103),
                     parent_csli_cell_index: None,
                     first_child_index: -1,
                     next_sibling_index: -1,
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn matrix_modifier_keeps_parent_axis_lengths_and_zeroes_only_own_final_z() {
         let mut special = layer(b"special", true, vec![None, None]);
-        special.nodes[0].type_flags = Some(3 | 0x0001_0000 | 0x0100_0000);
+        special.nodes[0].type_flags = Some(3 | 0x100 | 0x0001_0000 | 0x0100_0000);
         special.nodes[0].first_child_index = 1;
         special.transforms[0] = RawTransform::Trs2(SpatialTransform {
             translation: [0.0, 0.0, 5.0],
@@ -588,6 +588,26 @@ mod tests {
     }
 
     #[test]
+    fn disabled_cast_draw_gate_does_not_hide_or_gate_enabled_child() {
+        let mut layer = layer(b"gated", true, vec![None, None]);
+        layer.flags |= 0x100;
+        layer.nodes[0].type_flags = Some(1);
+        layer.nodes[0].first_child_index = 1;
+        layer.nodes[1].type_flags = Some(0x101);
+        let project = project(vec![layer]);
+        let runtime = ProjectRuntime::new(&project).unwrap();
+
+        let worlds = runtime
+            .compose_world_states(&project, Affine3x4::IDENTITY, Affine3x4::IDENTITY)
+            .unwrap();
+        let casts = &worlds.project_layers[0][0].casts;
+        assert!(casts[0].visible);
+        assert!(!casts[0].render_gate);
+        assert!(casts[1].visible);
+        assert!(casts[1].render_gate);
+    }
+
+    #[test]
     fn project_runtime_world_states_follow_refcast_parent_mode_color_and_gate() {
         let mut root = layer(b"root", true, vec![Some(reference(b"scene", b"target", 0))]);
         root.flags |= 0x100;
@@ -602,7 +622,7 @@ mod tests {
         // RefCast mode to every CAST in this independent copy.
         let mut target = layer(b"target", false, vec![None]);
         target.flags |= 0x100;
-        target.nodes[0].type_flags = Some(3 | 0x200 | 0x0008_0000);
+        target.nodes[0].type_flags = Some(3 | 0x100 | 0x200 | 0x0008_0000);
         target.transforms[0] = RawTransform::Trs3(SpatialTransform {
             translation: [4.0, 5.0, 0.0],
             rotation: [0, 0, 0x4000],
